@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
@@ -12,9 +13,9 @@ class BuildProfileImage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (profile!.imagePath.isNotEmpty) {
-      return Image.file(
-        File(profile!.imagePath),
+    if (profile != null && profile!.compressedImage.isNotEmpty) {
+      return Image.memory(
+        base64Decode(profile!.compressedImage),
         width: 40,
         height: 40,
         fit: BoxFit.cover,

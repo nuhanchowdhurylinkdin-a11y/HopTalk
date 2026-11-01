@@ -29,6 +29,7 @@ dependencies:
   nearby_connections: ^4.3.0
   permission_handler: ^13.0.2
   location: ^10.0.2
+  flutter_image_compress: ^2.5.1
   
 
 dev_dependencies:

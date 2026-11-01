@@ -21,13 +21,14 @@ class UserProfileAdapter extends TypeAdapter<UserProfile> {
       name: fields[1] as String,
       avatar: fields[2] as String,
       imagePath: fields[3] as String,
+      compressedImage: fields[4] == null ? '' : fields[4] as String,
     );
   }
 
   @override
   void write(BinaryWriter writer, UserProfile obj) {
     writer
-      ..writeByte(4)
+      ..writeByte(5)
       ..writeByte(0)
       ..write(obj.userId)
       ..writeByte(1)
@@ -35,7 +36,9 @@ class UserProfileAdapter extends TypeAdapter<UserProfile> {
       ..writeByte(2)
       ..write(obj.avatar)
       ..writeByte(3)
-      ..write(obj.imagePath);
+      ..write(obj.imagePath)
+      ..writeByte(4)
+      ..write(obj.compressedImage);
   }
 
   @override

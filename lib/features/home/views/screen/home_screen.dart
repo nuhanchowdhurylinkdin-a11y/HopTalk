@@ -11,6 +11,8 @@ import 'package:hop_talk/features/mesh_network/controller/mesh_network_controlle
 import 'package:hop_talk/features/setup/models/user_profile.dart';
 import 'package:hop_talk/routes/app_routes.dart';
 
+import '../../../chat/views/chat_screen.dart';
+
 class HomeScreen extends GetView<HomeController> {
   HomeScreen({super.key});
 
@@ -67,6 +69,54 @@ class HomeScreen extends GetView<HomeController> {
             );
           }),
         ],
+      ),
+      body: GetBuilder<MeshNetworkController>(
+        builder: (mesh) {
+          final routes = mesh.reachableRoutes;
+
+          if (routes.isEmpty) {
+            return const Center(child: Text("No devices in the mesh yet"));
+          }
+
+          return ListView.separated(
+            itemCount: routes.length,
+            separatorBuilder: (_, __) => const Divider(height: 1),
+            itemBuilder: (context, index) {
+              final route = routes[index];
+              final name = mesh.displayNameOf(route.destinationId);
+
+              return ListTile(
+                onTap: () => Get.to(
+                      () => ChatScreen(
+                    peerId: route.destinationId,
+                    peerName: name,
+                    avatar: route.avatar,
+                    imageByte: route.imageByte,
+                  ),
+                ),
+                leading: CircleAvatar(
+                  radius: 22,
+                  backgroundColor: Colors.transparent,
+                  child: ClipOval(
+                    child: BuildProfileImage(
+                      profile: UserProfile(
+                        userId: route.destinationId,
+                        name: name,
+                        avatar: route.avatar,
+                        imagePath: '',
+                        compressedImage: route.imageByte,
+                      ),
+                    ),
+                  ),
+                ),
+                title: Text(name),
+                subtitle: Text(
+                  route.hopCount == 1 ? "Direct" : "${route.hopCount} hops",
+                ),
+              );
+            },
+          );
+        },
       ),
     );
   }

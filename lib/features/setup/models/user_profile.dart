@@ -17,10 +17,14 @@ class UserProfile extends HiveObject {
   @HiveField(3)
   final String imagePath;
 
+  @HiveField(4, defaultValue: '')
+  final String compressedImage;
+
   UserProfile({
     required this.userId,
     required this.name,
     required this.avatar,
     required this.imagePath,
+    required this.compressedImage,
   });
 }

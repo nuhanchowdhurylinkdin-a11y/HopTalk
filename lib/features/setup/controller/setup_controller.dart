@@ -1,10 +1,12 @@
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:crypto/crypto.dart';
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:get/get.dart';
 import 'package:hive_flutter/adapters.dart';
 import 'package:hop_talk/core/services/storage_service.dart';
@@ -36,8 +38,9 @@ class SetupController extends GetxController {
     'assets/setup_avatars/avatar15.svg',
   ];
 
-  final Box<UserProfile> _userProfileBox =
-    Hive.box<UserProfile>('userProfileBox');
+  final Box<UserProfile> _userProfileBox = Hive.box<UserProfile>(
+    'userProfileBox',
+  );
   final ImagePicker _picker = ImagePicker();
 
   final nameController = TextEditingController();
@@ -46,10 +49,13 @@ class SetupController extends GetxController {
   final RxString selectedAvatar = ''.obs;
   final RxString profileImagePath = ''.obs;
   final RxInt currentAvatarPage = 0.obs;
+  final RxBool isSaving = false.obs;
+
   static const int avatarsPerPage = 8;
+  static const int maxNameLength = 30;
+  static const int maxMeshImageChars = 12000;
+
   int get avatarPageCount => (avatars.length / avatarsPerPage).ceil();
-  DeviceInfoPlugin deviceInfo = DeviceInfoPlugin();
-  String hardwareIdentifier = '';
 
   List<String> avatarsForPage(int pageIndex) {
     final start = pageIndex * avatarsPerPage;
@@ -59,8 +65,12 @@ class SetupController extends GetxController {
   }
 
   void selectAvatar(String assetPath) {
+    final String previousImagePath = profileImagePath.value;
+
     selectedAvatar.value = assetPath;
     profileImagePath.value = '';
+
+    _deleteFileQuietly(previousImagePath);
   }
 
   Future<void> pickImageFromGallery() async {
@@ -73,7 +83,6 @@ class SetupController extends GetxController {
 
       if (pickedFile == null) return;
 
-      // Copy the image to permanent app storage.
       final directory = await getApplicationDocumentsDirectory();
 
       final extension = p.extension(pickedFile.path).isEmpty
@@ -87,8 +96,14 @@ class SetupController extends GetxController {
 
       final savedFile = await File(pickedFile.path).copy(savedPath);
 
+      final String previousImagePath = profileImagePath.value;
+
       profileImagePath.value = savedFile.path;
       selectedAvatar.value = '';
+
+      if (previousImagePath != savedFile.path) {
+        _deleteFileQuietly(previousImagePath);
+      }
     } catch (e) {
       AppHelpers.showErrorSnackbar(
         title: 'Error!',
@@ -97,14 +112,71 @@ class SetupController extends GetxController {
     }
   }
 
+  Future<void> _deleteFileQuietly(String path) async {
+    if (path.isEmpty) return;
+    try {
+      final file = File(path);
+      if (await file.exists()) {
+        await file.delete();
+      }
+    } catch (e) {
+      debugPrint('Could not delete old profile image: $e');
+    }
+  }
+
+  Future<String?> _compressAndConvertToBase64(String imagePath) async {
+    try {
+      final file = File(imagePath);
+      if (!await file.exists()) return null;
+
+      final List<List<int>> attempts = [
+        [128, 45],
+        [96, 35],
+        [64, 30],
+      ];
+
+      for (final attempt in attempts) {
+        final Uint8List? compressedBytes =
+        await FlutterImageCompress.compressWithFile(
+          file.absolute.path,
+          minWidth: attempt[0],
+          minHeight: attempt[0],
+          quality: attempt[1],
+          format: CompressFormat.jpeg,
+        );
+
+        if (compressedBytes == null) return null;
+
+        final String encoded = base64Encode(compressedBytes);
+        if (encoded.length <= maxMeshImageChars) {
+          return encoded;
+        }
+      }
+
+      return null;
+    } catch (e) {
+      debugPrint('Image compress error: $e');
+      return null;
+    }
+  }
+
   Future<void> saveProfile() async {
+    if (isSaving.value) return;
+
     final enteredName = nameController.text.trim();
-    String sault = generateSecureSalt();
 
     if (enteredName.isEmpty) {
       AppHelpers.showErrorSnackbar(
         title: 'Required',
         message: 'Please enter your name.',
+      );
+      return;
+    }
+
+    if (enteredName.runes.length > maxNameLength) {
+      AppHelpers.showErrorSnackbar(
+        title: 'Too long',
+        message: 'Name can be at most $maxNameLength characters.',
       );
       return;
     }
@@ -117,28 +189,33 @@ class SetupController extends GetxController {
       return;
     }
 
-    final String userId = await generateCustomUserId(
-      userName: enteredName,
-      customSalt: sault,
-    );
-
-    final profile = UserProfile(
-      userId: userId,
-      name: enteredName,
-      avatar: selectedAvatar.value,
-      imagePath: profileImagePath.value,
-    );
+    isSaving.value = true;
 
     try {
-      // await _box.put('name', enteredName);
-      // await _box.put('avatar', selectedAvatar.value);
-      // await _box.put('imagePath', profileImagePath.value);
-      // await _box.put("userId", customUserId);
+      final String salt = generateSecureSalt();
+
+      final String userId = await generateCustomUserId(
+        userName: enteredName,
+        customSalt: salt,
+      );
+
+      String? imageBase64;
+      if (profileImagePath.value.isNotEmpty) {
+        imageBase64 = await _compressAndConvertToBase64(profileImagePath.value);
+      }
+
+      final profile = UserProfile(
+        userId: userId,
+        name: enteredName,
+        avatar: selectedAvatar.value,
+        imagePath: profileImagePath.value,
+        compressedImage: imageBase64 ?? '',
+      );
 
       await _userProfileBox.put('current', profile);
       name.value = enteredName;
 
-      StorageService.setSetupComplete(true);
+      await StorageService.setSetupComplete(true);
       Get.offAllNamed(AppRoutes.permissionScreen);
 
       AppHelpers.showSuccessSnackbar(
@@ -150,6 +227,8 @@ class SetupController extends GetxController {
         title: 'Error!',
         message: 'Could not save your profile.',
       );
+    } finally {
+      isSaving.value = false;
     }
   }
 
@@ -171,14 +250,6 @@ class SetupController extends GetxController {
         AndroidDeviceInfo androidInfo = await deviceInfo.androidInfo;
         hardwareIdentifier = androidInfo.id;
       }
-      // else if (Platform.isIOS) {
-      //   IosDeviceInfo iosInfo = await deviceInfo.iosInfo;
-      //   hardwareIdentifier =
-      //       iosInfo.identifierForVendor ??
-      //       'ios_unknown';
-      // } else {
-      //   hardwareIdentifier = 'other_device';
-      // }
 
       String timestamp = DateTime.now().millisecondsSinceEpoch.toString();
 

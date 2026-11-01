@@ -1,9 +1,9 @@
 import 'dart:async';
 import 'dart:convert';
-
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:get/get.dart';
 import 'package:hop_talk/features/home/controller/home_controller.dart';
 import 'package:location/location.dart' as loc;
@@ -16,7 +16,10 @@ class MeshNetworkController extends GetxController {
   HomeController get _homeController => Get.find<HomeController>();
 
   late final _currentUserId = _homeController.userProfileData.value!.userId;
-  late final _userName = _homeController.userProfileData.value!.name;
+  late final _userName = _homeController.userProfileData.value?.name ?? 'User';
+  late final _avatar = _homeController.userProfileData.value?.avatar ?? '';
+  late final _compressedProfile =
+      _homeController.userProfileData.value?.compressedImage ?? '';
 
   final String serviceId = "com.hoptalk.mesh";
   final Strategy strategy = Strategy.P2P_CLUSTER;
@@ -36,6 +39,8 @@ class MeshNetworkController extends GetxController {
   var discoveredDevices = <String, String>{}.obs; // endpointId -> user name
   var blockedDevices = <String>[].obs; // blocked userIds
   var knownUsers = <String, String>{}.obs; // userId -> user name
+  var knownProfiles =
+      <String, Map<String, dynamic>>{}.obs; // userId -> name, avatar, image, version
   var chatMessages = <Map<String, dynamic>>[].obs;
 
   void Function(Map<String, dynamic> message)? onMessageReceived;
@@ -56,11 +61,17 @@ class MeshNetworkController extends GetxController {
   final int _maxConnectionRetries = 3;
   final int _fallbackConnectDelaySeconds = 6;
   final int _routeRefreshSeconds = 30;
-  final int _maxEndpointNameLength = 20;
+  final int _maxEndpointNameBytes = 40;
+  final int _shortIdLength = 16;
+  final int _maxProfileNameLength = 30;
+  final int _maxProfileImageChars = 12000;
 
   int _messageCounter = 0;
   int? _sdkInt;
   Timer? _routeRefreshTimer;
+
+  String _ownImage = '';
+  int _profileVersion = 0;
 
   Future<void> initMeshNetwork() async {
     bool hasPermission = await checkAndRequestPermissions();
@@ -71,12 +82,17 @@ class MeshNetworkController extends GetxController {
 
       _resetState();
 
+      _profileVersion = DateTime.now().millisecondsSinceEpoch;
+      _ownImage = await _buildMeshThumbnail(_compressedProfile);
+
       await Future.delayed(Duration(milliseconds: 500));
 
       routingTable[_currentUserId] = RouteEntry(
         destinationId: _currentUserId,
         nextHopId: 'SELF',
         hopCount: 0,
+        avatar: _sanitizeAvatar(_avatar),
+        imageByte: _ownImage,
       );
 
       await startMeshNode(_userName);
@@ -87,6 +103,35 @@ class MeshNetworkController extends GetxController {
         "Bluetooth, Location & Nearby permissions are required for offline mesh.",
       );
     }
+  }
+
+  Future<String> _buildMeshThumbnail(String sourceBase64) async {
+    if (sourceBase64.isEmpty) return '';
+    if (sourceBase64.length <= _maxProfileImageChars) return sourceBase64;
+
+    try {
+      final Uint8List sourceBytes = base64Decode(sourceBase64);
+      final List<List<int>> attempts = [
+        [128, 45],
+        [96, 35],
+        [64, 30],
+      ];
+
+      for (final attempt in attempts) {
+        final Uint8List result = await FlutterImageCompress.compressWithList(
+          sourceBytes,
+          minWidth: attempt[0],
+          minHeight: attempt[0],
+          quality: attempt[1],
+          format: CompressFormat.jpeg,
+        );
+        final String encoded = base64Encode(result);
+        if (encoded.length <= _maxProfileImageChars) return encoded;
+      }
+    } catch (e) {
+      _log("Could not shrink profile image: $e");
+    }
+    return '';
   }
 
   Future<bool> checkAndRequestPermissions() async {
@@ -154,7 +199,7 @@ class MeshNetworkController extends GetxController {
         !needsNearbyWifi || await Permission.nearbyWifiDevices.isGranted;
 
     batteryOptimizationDisabled.value =
-        await Permission.ignoreBatteryOptimizations.isGranted;
+    await Permission.ignoreBatteryOptimizations.isGranted;
 
     return bluetoothScanGranted.value &&
         bluetoothAdvertiseGranted.value &&
@@ -209,7 +254,7 @@ class MeshNetworkController extends GetxController {
         serviceId: serviceId,
         onEndpointFound: (String endpointId, String name, String serviceId) {
           final parsed = _parseEndpointName(name);
-          if (parsed[0] == _currentUserId) return;
+          if (_isSelf(parsed[0])) return;
           if (parsed[0].isNotEmpty) _endpointUserIds[endpointId] = parsed[0];
           _endpointNames[endpointId] = parsed[1];
           discoveredDevices[endpointId] = parsed[1];
@@ -235,7 +280,8 @@ class MeshNetworkController extends GetxController {
 
     final String remoteUserId = _endpointUserIds[endpointId] ?? '';
     final bool isInitiator =
-        remoteUserId.isEmpty || _currentUserId.compareTo(remoteUserId) < 0;
+        remoteUserId.isEmpty ||
+            _shortId(_currentUserId).compareTo(_shortId(remoteUserId)) < 0;
 
     if (isInitiator) {
       _requestConnection(localUserName, endpointId);
@@ -259,9 +305,9 @@ class MeshNetworkController extends GetxController {
   }
 
   Future<void> _requestConnection(
-    String localUserName,
-    String endpointId,
-  ) async {
+      String localUserName,
+      String endpointId,
+      ) async {
     if (connectedEndpoints.containsKey(endpointId) ||
         _pendingEndpoints.contains(endpointId)) {
       return;
@@ -302,9 +348,9 @@ class MeshNetworkController extends GetxController {
   }
 
   Future<void> _onConnectionInitiated(
-    String endpointId,
-    ConnectionInfo info,
-  ) async {
+      String endpointId,
+      ConnectionInfo info,
+      ) async {
     final parsed = _parseEndpointName(info.endpointName);
     final String remoteUserId = parsed[0];
 
@@ -344,8 +390,8 @@ class MeshNetworkController extends GetxController {
       _retryCounts.remove(endpointId);
       connectedEndpoints[endpointId] =
           _endpointNames[endpointId] ??
-          discoveredDevices[endpointId] ??
-          endpointId;
+              discoveredDevices[endpointId] ??
+              endpointId;
       _sendHandshake(endpointId);
       update();
     } else {
@@ -370,7 +416,7 @@ class MeshNetworkController extends GetxController {
     Map<String, dynamic> handshakePacket = {
       "type": "HANDSHAKE",
       "userId": _currentUserId,
-      "userName": _userName,
+      "userName": _limitRunes(_userName, _maxProfileNameLength),
     };
 
     Uint8List bytes = Uint8List.fromList(
@@ -380,16 +426,45 @@ class MeshNetworkController extends GetxController {
   }
 
   String _encodeEndpointName(String name) {
-    final String shortName = name.length > _maxEndpointNameLength
-        ? name.substring(0, _maxEndpointNameLength)
-        : name;
-    return "$_currentUserId|$shortName";
+    return "${_shortId(_currentUserId)}|${_truncateUtf8(name, _maxEndpointNameBytes)}";
   }
 
   List<String> _parseEndpointName(String raw) {
     final int separator = raw.indexOf('|');
     if (separator <= 0) return ['', raw];
     return [raw.substring(0, separator), raw.substring(separator + 1)];
+  }
+
+  String _shortId(String id) {
+    return id.length > _shortIdLength ? id.substring(0, _shortIdLength) : id;
+  }
+
+  String _truncateUtf8(String value, int maxBytes) {
+    final StringBuffer buffer = StringBuffer();
+    int used = 0;
+    for (final rune in value.runes) {
+      final String character = String.fromCharCode(rune);
+      final int size = utf8.encode(character).length;
+      if (used + size > maxBytes) break;
+      buffer.write(character);
+      used += size;
+    }
+    return buffer.toString();
+  }
+
+  String _limitRunes(String value, int maxRunes) {
+    final List<int> runes = value.runes.toList();
+    if (runes.length <= maxRunes) return value;
+    return String.fromCharCodes(runes.sublist(0, maxRunes));
+  }
+
+  bool _sameUser(String a, String b) {
+    if (a.isEmpty || b.isEmpty) return false;
+    return a.startsWith(b) || b.startsWith(a);
+  }
+
+  bool _isSelf(String userId) {
+    return _sameUser(_currentUserId, userId);
   }
 
   void _handleIncomingPayload(String senderEndpointId, Uint8List rawBytes) {
@@ -409,6 +484,9 @@ class MeshNetworkController extends GetxController {
         return;
       } else if (type == 'ROUTING_UPDATE') {
         _processRoutingUpdate(senderEndpointId, packet);
+        return;
+      } else if (type == 'PROFILE') {
+        _handleProfile(senderEndpointId, packet);
         return;
       }
 
@@ -467,8 +545,8 @@ class MeshNetworkController extends GetxController {
     }
 
     final String name = remoteUserName is String
-        ? remoteUserName
-        : remoteUserId;
+        ? _limitRunes(remoteUserName, _maxProfileNameLength)
+        : _shortId(remoteUserId);
 
     _endpointUserIds[senderEndpointId] = remoteUserId;
     _endpointNames[senderEndpointId] = name;
@@ -478,15 +556,158 @@ class MeshNetworkController extends GetxController {
     _addDirectNeighbor(senderEndpointId, remoteUserId);
     _sendRoutingTableTo(senderEndpointId);
     _broadcastRoutingTable(exceptEndpointId: senderEndpointId);
+    _sendProfilesTo(senderEndpointId, remoteUserId);
     update();
   }
 
   void _addDirectNeighbor(String endpointId, String userId) {
-    routingTable[userId] = RouteEntry(
-      destinationId: userId,
-      nextHopId: endpointId,
-      hopCount: 1,
+    routingTable[userId] = _newRoute(userId, endpointId, 1);
+  }
+
+  RouteEntry _newRoute(String destId, String nextHopId, int hopCount) {
+    final Map<String, dynamic>? profile = knownProfiles[destId];
+    return RouteEntry(
+      destinationId: destId,
+      nextHopId: nextHopId,
+      hopCount: hopCount,
+      avatar: (profile?['avatar'] as String?) ?? '',
+      imageByte: (profile?['image'] as String?) ?? '',
     );
+  }
+
+  void _applyProfileToRoutes(String userId) {
+    final RouteEntry? entry = routingTable[userId];
+    if (entry == null) return;
+    routingTable[userId] = _newRoute(userId, entry.nextHopId, entry.hopCount);
+  }
+
+  Uint8List _profileBytes({
+    required String userId,
+    required String name,
+    required String avatar,
+    required String image,
+    required int version,
+  }) {
+    final Map<String, dynamic> packet = {
+      "type": "PROFILE",
+      "userId": userId,
+      "userName": _limitRunes(name, _maxProfileNameLength),
+      "avatar": avatar,
+      "image": image,
+      "version": version,
+    };
+    return Uint8List.fromList(utf8.encode(jsonEncode(packet)));
+  }
+
+  void _sendProfilesTo(String endpointId, String remoteUserId) {
+    _sendBytes(
+      endpointId,
+      _profileBytes(
+        userId: _currentUserId,
+        name: _userName,
+        avatar: _sanitizeAvatar(_avatar),
+        image: _ownImage,
+        version: _profileVersion,
+      ),
+    );
+
+    knownProfiles.forEach((userId, profile) {
+      if (_sameUser(userId, remoteUserId)) return;
+      _sendBytes(
+        endpointId,
+        _profileBytes(
+          userId: userId,
+          name: (profile['name'] as String?) ?? '',
+          avatar: (profile['avatar'] as String?) ?? '',
+          image: (profile['image'] as String?) ?? '',
+          version: (profile['version'] as int?) ?? 0,
+        ),
+      );
+    });
+  }
+
+  void _handleProfile(String senderEndpointId, Map<String, dynamic> packet) {
+    final userId = packet['userId'];
+    final name = packet['userName'];
+    final version = packet['version'];
+
+    if (userId is! String || userId.isEmpty || _isSelf(userId)) return;
+    if (name is! String || version is! int) return;
+    if (_isBlockedUser(userId)) return;
+
+    final String cleanName = _limitRunes(name, _maxProfileNameLength);
+    final String cleanAvatar = _sanitizeAvatar(packet['avatar']);
+    final String cleanImage = _sanitizeImage(packet['image']);
+
+    final Map<String, dynamic>? existing = knownProfiles[userId];
+    bool shouldAccept;
+    if (existing == null) {
+      shouldAccept = true;
+    } else {
+      final int existingVersion = (existing['version'] as int?) ?? 0;
+      final String existingImage = (existing['image'] as String?) ?? '';
+      if (version > existingVersion) {
+        shouldAccept = true;
+      } else if (version == existingVersion &&
+          existingImage.isEmpty &&
+          cleanImage.isNotEmpty) {
+        shouldAccept = true;
+      } else {
+        shouldAccept = false;
+      }
+    }
+
+    if (!shouldAccept) return;
+
+    knownProfiles[userId] = {
+      "name": cleanName,
+      "avatar": cleanAvatar,
+      "image": cleanImage,
+      "version": version,
+    };
+    knownUsers[userId] = cleanName;
+    _applyProfileToRoutes(userId);
+
+    final Uint8List bytes = _profileBytes(
+      userId: userId,
+      name: cleanName,
+      avatar: cleanAvatar,
+      image: cleanImage,
+      version: version,
+    );
+
+    for (final endpointId in connectedEndpoints.keys.toList()) {
+      if (endpointId != senderEndpointId) {
+        _sendBytes(endpointId, bytes);
+      }
+    }
+
+    update();
+  }
+
+  String _sanitizeAvatar(dynamic value) {
+    if (value is! String) return '';
+    if (value.length > 64) return '';
+    if (value.startsWith('assets/setup_avatars/') &&
+        value.endsWith('.svg') &&
+        !value.contains('..')) {
+      return value;
+    }
+    return '';
+  }
+
+  String _sanitizeImage(dynamic value) {
+    if (value is! String || value.isEmpty) return '';
+    if (value.length > _maxProfileImageChars) return '';
+    try {
+      final Uint8List bytes = base64Decode(value);
+      if (bytes.length < 4) return '';
+      final bool isJpeg = bytes[0] == 0xFF && bytes[1] == 0xD8;
+      if (!isJpeg) return '';
+      return value;
+    } catch (e) {
+      return '';
+    }
   }
 
   void _sendRoutingTableTo(String endpointId) {
@@ -522,9 +743,9 @@ class MeshNetworkController extends GetxController {
   }
 
   void _processRoutingUpdate(
-    String senderEndpointId,
-    Map<String, dynamic> packet,
-  ) {
+      String senderEndpointId,
+      Map<String, dynamic> packet,
+      ) {
     final routes = packet['routes'];
     if (routes is! List) return;
 
@@ -555,10 +776,10 @@ class MeshNetworkController extends GetxController {
       }
 
       if (shouldReplace) {
-        routingTable[destId] = RouteEntry(
-          destinationId: destId,
-          nextHopId: senderEndpointId,
-          hopCount: calculatedHops,
+        routingTable[destId] = _newRoute(
+          destId,
+          senderEndpointId,
+          calculatedHops,
         );
         isTableChanged = true;
       }
@@ -567,9 +788,9 @@ class MeshNetworkController extends GetxController {
     final List<String> staleDestinations = routingTable.entries
         .where(
           (e) =>
-              e.value.nextHopId == senderEndpointId &&
-              !advertisedDestinations.contains(e.key),
-        )
+      e.value.nextHopId == senderEndpointId &&
+          !advertisedDestinations.contains(e.key),
+    )
         .map((e) => e.key)
         .toList();
 
@@ -600,7 +821,7 @@ class MeshNetworkController extends GetxController {
     _routeRefreshTimer?.cancel();
     _routeRefreshTimer = Timer.periodic(
       Duration(seconds: _routeRefreshSeconds),
-      (_) => _broadcastRoutingTable(),
+          (_) => _broadcastRoutingTable(),
     );
   }
 
@@ -621,9 +842,9 @@ class MeshNetworkController extends GetxController {
   }
 
   void relayMessageToMesh(
-    String originEndpointId,
-    Map<String, dynamic> packet,
-  ) {
+      String originEndpointId,
+      Map<String, dynamic> packet,
+      ) {
     final int ttl = packet['ttl'] is int ? packet['ttl'] as int : 0;
     if (ttl <= 1) return;
 
@@ -666,6 +887,10 @@ class MeshNetworkController extends GetxController {
   }
 
   Future<void> _sendBytes(String endpointId, Uint8List bytes) async {
+    if (bytes.length > _maxPayloadBytes) {
+      _log("Payload too large (${bytes.length} bytes), not sent");
+      return;
+    }
     try {
       await Nearby().sendBytesPayload(endpointId, bytes);
     } catch (e) {
@@ -708,7 +933,7 @@ class MeshNetworkController extends GetxController {
 
   String _generateMessageId() {
     _messageCounter++;
-    return "${_currentUserId}_${DateTime.now().microsecondsSinceEpoch}_$_messageCounter";
+    return "${_shortId(_currentUserId)}_${DateTime.now().microsecondsSinceEpoch}_$_messageCounter";
   }
 
   bool _rememberMessageId(String messageId) {
@@ -732,14 +957,16 @@ class MeshNetworkController extends GetxController {
     final String? userId = _endpointUserIds[endpointId];
     if (userId == null || userId.isEmpty) return;
 
-    if (!blockedDevices.contains(userId)) {
+    if (!_isBlockedUser(userId)) {
       blockedDevices.add(userId);
     }
 
     final List<String> endpointsOfUser = _endpointUserIds.entries
         .where(
-          (e) => e.value == userId && connectedEndpoints.containsKey(e.key),
-        )
+          (e) =>
+      _sameUser(e.value, userId) &&
+          connectedEndpoints.containsKey(e.key),
+    )
         .map((e) => e.key)
         .toList();
 
@@ -751,15 +978,13 @@ class MeshNetworkController extends GetxController {
   }
 
   void unblockDevice(String userIdOrEndpointId) {
-    String userId = userIdOrEndpointId;
-    if (!blockedDevices.contains(userId)) {
-      userId = _endpointUserIds[userIdOrEndpointId] ?? userIdOrEndpointId;
-    }
+    final String userId =
+        _endpointUserIds[userIdOrEndpointId] ?? userIdOrEndpointId;
 
-    blockedDevices.remove(userId);
+    blockedDevices.removeWhere((blocked) => _sameUser(blocked, userId));
 
     final List<String> endpointsOfUser = _endpointUserIds.entries
-        .where((e) => e.value == userId)
+        .where((e) => _sameUser(e.value, userId))
         .map((e) => e.key)
         .toList();
 
@@ -780,7 +1005,8 @@ class MeshNetworkController extends GetxController {
   }
 
   bool _isBlockedUser(String userId) {
-    return userId.isNotEmpty && blockedDevices.contains(userId);
+    if (userId.isEmpty) return false;
+    return blockedDevices.any((blocked) => _sameUser(blocked, userId));
   }
 
   Future<void> requestSinglePermission(Permission permission) async {
@@ -788,8 +1014,8 @@ class MeshNetworkController extends GetxController {
 
     final bool isNewBluetooth =
         permission == Permission.bluetoothScan ||
-        permission == Permission.bluetoothAdvertise ||
-        permission == Permission.bluetoothConnect;
+            permission == Permission.bluetoothAdvertise ||
+            permission == Permission.bluetoothConnect;
     final bool isNearbyWifi = permission == Permission.nearbyWifiDevices;
 
     if ((isNewBluetooth && sdk < 31) || (isNearbyWifi && sdk < 33)) {
@@ -832,7 +1058,7 @@ class MeshNetworkController extends GetxController {
           title: Text("Battery Optimization"),
           content: Text(
             "For continuous mesh networking, please disable battery optimization. "
-            "This keeps HopTalk running in the background to relay messages.",
+                "This keeps HopTalk running in the background to relay messages.",
           ),
           actions: [
             TextButton(onPressed: () => Get.back(), child: Text("Cancel")),
@@ -847,6 +1073,28 @@ class MeshNetworkController extends GetxController {
         ),
       );
     }
+  }
+
+  List<RouteEntry> get reachableRoutes {
+    final List<RouteEntry> list = routingTable.values
+        .where((e) => e.nextHopId != 'SELF')
+        .toList();
+
+    list.sort((a, b) {
+      final int byHops = a.hopCount.compareTo(b.hopCount);
+      if (byHops != 0) return byHops;
+      return displayNameOf(a.destinationId).compareTo(
+        displayNameOf(b.destinationId),
+      );
+    });
+
+    return list;
+  }
+
+  String displayNameOf(String userId) {
+    final String? name = knownUsers[userId];
+    if (name != null && name.isNotEmpty) return name;
+    return userId.length > 6 ? userId.substring(0, 6) : userId;
   }
 
   @override
