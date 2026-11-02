@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:get/get.dart';
 import 'package:hop_talk/features/home/controller/home_controller.dart';
+import 'package:hop_talk/features/mesh_network/service/crypto_service.dart';
 import 'package:location/location.dart' as loc;
 import 'package:nearby_connections/nearby_connections.dart';
 import 'package:permission_handler/permission_handler.dart';
@@ -14,6 +15,10 @@ import '../models/route_entry.dart';
 
 class MeshNetworkController extends GetxController {
   HomeController get _homeController => Get.find<HomeController>();
+
+  final CryptoService _crypto = CryptoService();
+  final Map<String, List<Map<String, dynamic>>> _pendingIncoming = {};
+  final int _maxPendingPerSender = 20;
 
   late final _currentUserId = _homeController.userProfileData.value!.userId;
   late final _userName = _homeController.userProfileData.value?.name ?? 'User';
@@ -40,7 +45,7 @@ class MeshNetworkController extends GetxController {
   var blockedDevices = <String>[].obs; // blocked userIds
   var knownUsers = <String, String>{}.obs; // userId -> user name
   var knownProfiles =
-      <String, Map<String, dynamic>>{}.obs; // userId -> name, avatar, image, version
+      <String, Map<String, dynamic>>{}.obs; // userId -> name, avatar, image, publicKey, version
   var chatMessages = <Map<String, dynamic>>[].obs;
 
   void Function(Map<String, dynamic> message)? onMessageReceived;
@@ -76,6 +81,7 @@ class MeshNetworkController extends GetxController {
   Future<void> initMeshNetwork() async {
     bool hasPermission = await checkAndRequestPermissions();
     if (hasPermission) {
+      await _crypto.init();
       await Nearby().stopAdvertising();
       await Nearby().stopDiscovery();
       await Nearby().stopAllEndpoints();
@@ -467,7 +473,10 @@ class MeshNetworkController extends GetxController {
     return _sameUser(_currentUserId, userId);
   }
 
-  void _handleIncomingPayload(String senderEndpointId, Uint8List rawBytes) {
+  Future<void> _handleIncomingPayload(
+      String senderEndpointId,
+      Uint8List rawBytes,
+      ) async {
     try {
       final String? endpointUserId = _endpointUserIds[senderEndpointId];
       if (endpointUserId != null && _isBlockedUser(endpointUserId)) return;
@@ -512,7 +521,7 @@ class MeshNetworkController extends GetxController {
       final String currentUserId = _currentUserId;
 
       if (targetUserId == currentUserId) {
-        _storeIncomingMessage(packet);
+        await _deliverToMe(packet);
         return;
       }
 
@@ -526,6 +535,34 @@ class MeshNetworkController extends GetxController {
       }
     } catch (e) {
       _log("Dropped invalid payload from $senderEndpointId: $e");
+    }
+  }
+
+  Future<void> _deliverToMe(Map<String, dynamic> packet) async {
+    final String senderId = packet['senderId'] as String;
+    final String body = packet['body'] as String;
+
+    final String? senderKey = knownProfiles[senderId]?['publicKey'] as String?;
+    if (senderKey == null || senderKey.isEmpty) {
+      final list = _pendingIncoming.putIfAbsent(senderId, () => []);
+      if (list.length < _maxPendingPerSender) list.add(packet);
+      return;
+    }
+
+    final String? plainText = await _crypto.decrypt(body, senderKey);
+    if (plainText == null) {
+      _log("Could not decrypt message from $senderId");
+      return;
+    }
+
+    _storeIncomingMessage(packet, plainText);
+  }
+
+  Future<void> _flushPendingFor(String userId) async {
+    final List<Map<String, dynamic>>? list = _pendingIncoming.remove(userId);
+    if (list == null) return;
+    for (final packet in list) {
+      await _deliverToMe(packet);
     }
   }
 
@@ -586,6 +623,7 @@ class MeshNetworkController extends GetxController {
     required String name,
     required String avatar,
     required String image,
+    required String publicKey,
     required int version,
   }) {
     final Map<String, dynamic> packet = {
@@ -594,6 +632,7 @@ class MeshNetworkController extends GetxController {
       "userName": _limitRunes(name, _maxProfileNameLength),
       "avatar": avatar,
       "image": image,
+      "publicKey": publicKey,
       "version": version,
     };
     return Uint8List.fromList(utf8.encode(jsonEncode(packet)));
@@ -607,6 +646,7 @@ class MeshNetworkController extends GetxController {
         name: _userName,
         avatar: _sanitizeAvatar(_avatar),
         image: _ownImage,
+        publicKey: _crypto.publicKeyBase64,
         version: _profileVersion,
       ),
     );
@@ -620,6 +660,7 @@ class MeshNetworkController extends GetxController {
           name: (profile['name'] as String?) ?? '',
           avatar: (profile['avatar'] as String?) ?? '',
           image: (profile['image'] as String?) ?? '',
+          publicKey: (profile['publicKey'] as String?) ?? '',
           version: (profile['version'] as int?) ?? 0,
         ),
       );
@@ -635,15 +676,25 @@ class MeshNetworkController extends GetxController {
     if (name is! String || version is! int) return;
     if (_isBlockedUser(userId)) return;
 
+    final String cleanPublicKey = _sanitizePublicKey(packet['publicKey']);
+    if (cleanPublicKey.isEmpty) {
+      _log("PROFILE dropped from $userId: missing or invalid publicKey");
+      return;
+    }
+
     final String cleanName = _limitRunes(name, _maxProfileNameLength);
     final String cleanAvatar = _sanitizeAvatar(packet['avatar']);
     final String cleanImage = _sanitizeImage(packet['image']);
 
     final Map<String, dynamic>? existing = knownProfiles[userId];
+    _log("PROFILE accepted for $userId");
     bool shouldAccept;
     if (existing == null) {
       shouldAccept = true;
     } else {
+      final String existingKey = (existing['publicKey'] as String?) ?? '';
+      if (existingKey.isNotEmpty && existingKey != cleanPublicKey) return;
+
       final int existingVersion = (existing['version'] as int?) ?? 0;
       final String existingImage = (existing['image'] as String?) ?? '';
       if (version > existingVersion) {
@@ -663,6 +714,7 @@ class MeshNetworkController extends GetxController {
       "name": cleanName,
       "avatar": cleanAvatar,
       "image": cleanImage,
+      "publicKey": cleanPublicKey,
       "version": version,
     };
     knownUsers[userId] = cleanName;
@@ -673,6 +725,7 @@ class MeshNetworkController extends GetxController {
       name: cleanName,
       avatar: cleanAvatar,
       image: cleanImage,
+      publicKey: cleanPublicKey,
       version: version,
     );
 
@@ -683,6 +736,7 @@ class MeshNetworkController extends GetxController {
     }
 
     update();
+    _flushPendingFor(userId);
   }
 
   String _sanitizeAvatar(dynamic value) {
@@ -694,6 +748,16 @@ class MeshNetworkController extends GetxController {
       return value;
     }
     return '';
+  }
+
+  String _sanitizePublicKey(dynamic value) {
+    if (value is! String) return '';
+    try {
+      final Uint8List bytes = base64Decode(value);
+      return bytes.length == 32 ? value : '';
+    } catch (e) {
+      return '';
+    }
   }
 
   String _sanitizeImage(dynamic value) {
@@ -825,12 +889,12 @@ class MeshNetworkController extends GetxController {
     );
   }
 
-  void _storeIncomingMessage(Map<String, dynamic> packet) {
+  void _storeIncomingMessage(Map<String, dynamic> packet, String plainText) {
     final Map<String, dynamic> message = {
       "messageId": packet['messageId'],
       "senderId": packet['senderId'],
       "targetId": packet['targetId'],
-      "body": packet['body'],
+      "body": plainText,
       "hopCount": packet['hopCount'] is int ? packet['hopCount'] : 0,
       "timestamp": DateTime.now().millisecondsSinceEpoch,
       "isMine": false,
@@ -898,8 +962,32 @@ class MeshNetworkController extends GetxController {
     }
   }
 
-  bool broadcastMessage(String targetUserId, String messageBody, bool isLora) {
-    if (connectedEndpoints.isEmpty) return false;
+  Future<bool> broadcastMessage(
+      String targetUserId,
+      String messageBody,
+      bool isLora,
+      ) async {
+    if (connectedEndpoints.isEmpty) {
+      _log("SEND FAIL: no connected endpoints");
+      return false;
+    }
+
+    final String? peerPublicKey =
+    knownProfiles[targetUserId]?['publicKey'] as String?;
+    if (peerPublicKey == null || peerPublicKey.isEmpty) {
+      _log(
+        "SEND FAIL: no public key for $targetUserId, known profiles: ${knownProfiles.keys.toList()}",
+      );
+      return false;
+    }
+
+    String encryptedBody;
+    try {
+      encryptedBody = await _crypto.encrypt(messageBody, peerPublicKey);
+    } catch (e) {
+      _log("SEND FAIL: encryption error $e");
+      return false;
+    }
 
     final String messageId = _generateMessageId();
 
@@ -908,7 +996,7 @@ class MeshNetworkController extends GetxController {
       "messageId": messageId,
       "senderId": _currentUserId,
       "targetId": targetUserId,
-      "body": messageBody,
+      "body": encryptedBody,
       "hopCount": 0,
       "ttl": _defaultTtl,
     };
@@ -916,7 +1004,10 @@ class MeshNetworkController extends GetxController {
     _rememberMessageId(messageId);
 
     final int sentCount = _forwardPacket(packet);
-    if (sentCount == 0) return false;
+    if (sentCount == 0) {
+      _log("SEND FAIL: forwardPacket sent 0 (payload too large or no endpoint)");
+      return false;
+    }
 
     chatMessages.add({
       "messageId": messageId,
@@ -1123,6 +1214,7 @@ class MeshNetworkController extends GetxController {
     _retryCounts.clear();
     _endpointUserIds.clear();
     _endpointNames.clear();
+    _pendingIncoming.clear();
 
     isAdvertising.value = false;
     isDiscovering.value = false;

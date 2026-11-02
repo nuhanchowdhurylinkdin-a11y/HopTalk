@@ -1,3 +1,4 @@
+import 'package:cryptography_flutter/cryptography_flutter.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:hive_flutter/hive_flutter.dart';
@@ -15,8 +16,7 @@ void main() async {
   await Hive.initFlutter();
   Hive.registerAdapter(UserProfileAdapter());
   await Hive.openBox<UserProfile>('userProfileBox');
-
-
+  FlutterCryptography.enable();
   final initialRoute = await _determineInitialRoute();
 
   runApp(MyApp(initialRoute: initialRoute));

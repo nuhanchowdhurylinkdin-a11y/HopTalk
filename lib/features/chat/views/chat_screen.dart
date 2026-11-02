@@ -39,16 +39,19 @@ class _ChatScreenState extends State<ChatScreen> {
         .toList();
   }
 
-  void _send() {
+  Future<void> _send() async {
     final String text = _textController.text.trim();
     if (text.isEmpty) return;
 
-    final bool sent = mesh.broadcastMessage(widget.peerId, text, false);
+    final bool sent = await mesh.broadcastMessage(widget.peerId, text, false);
 
     if (sent) {
       _textController.clear();
     } else {
-      Get.snackbar("Not sent", "No connected device, or message is too long.");
+      Get.snackbar(
+        "Not sent",
+        "No connection, the other user's key has not arrived yet, or the message is too long.",
+      );
     }
   }
 
