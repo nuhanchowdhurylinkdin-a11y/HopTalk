@@ -87,6 +87,7 @@ class HomeScreen extends GetView<HomeController> {
                   final discovered = controller.getDiscoveredDevicesCount();
 
                   return Container(
+
                     height: 32,
                     padding: const EdgeInsets.symmetric(horizontal: 12),
                     width: double.maxFinite,
