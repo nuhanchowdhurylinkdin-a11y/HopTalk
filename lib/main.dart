@@ -8,14 +8,21 @@ import 'package:hop_talk/routes/app_routes.dart';
 import 'package:hop_talk/core/utils/bindings/controller_binder.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+import 'features/chat/models/chat_message.dart';
+import 'features/chat/service/chat_storage_service.dart';
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
-
 
   await StorageService.init();
   await Hive.initFlutter();
   Hive.registerAdapter(UserProfileAdapter());
   await Hive.openBox<UserProfile>('userProfileBox');
+  Hive.registerAdapter(ChatMessageAdapter());
+  await Get.putAsync<ChatStorageService>(
+    () => ChatStorageService().init(),
+    permanent: true,
+  );
   FlutterCryptography.enable();
   final initialRoute = await _determineInitialRoute();
 
@@ -40,10 +47,8 @@ Future<String> _determineInitialRoute() async {
   bool bluetoothConnect = await Permission.bluetoothConnect.isGranted;
   bool location = await Permission.location.isGranted;
 
-  bool arePermissionsGranted = bluetoothScan &&
-      bluetoothAdvertise &&
-      bluetoothConnect &&
-      location;
+  bool arePermissionsGranted =
+      bluetoothScan && bluetoothAdvertise && bluetoothConnect && location;
 
   if (!arePermissionsGranted) {
     return AppRoutes.permissionScreen;

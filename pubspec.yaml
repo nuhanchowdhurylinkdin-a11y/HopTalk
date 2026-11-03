@@ -50,6 +50,7 @@ flutter:
     - assets/onboarding/
     - assets/setup_avatars/
     - assets/app_icon/
+    - assets/images/
   fonts:
     - family: Inter
       fonts:
