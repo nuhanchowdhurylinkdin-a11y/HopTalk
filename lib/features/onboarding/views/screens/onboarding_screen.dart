@@ -1,7 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:get/get.dart';
-import 'package:hop_talk/core/common/icon/icon_path.dart';
+import 'package:hop_talk/core/utils/constants/icon_path.dart';
 import 'package:hop_talk/core/common/widgets/submit_button.dart';
 import 'package:hop_talk/core/utils/constants/colors.dart';
 import 'package:hop_talk/features/onboarding/controller/onboarding_controller.dart';

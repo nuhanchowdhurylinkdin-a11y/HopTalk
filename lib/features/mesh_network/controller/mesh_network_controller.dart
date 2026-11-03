@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
+
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
@@ -11,6 +12,8 @@ import 'package:location/location.dart' as loc;
 import 'package:nearby_connections/nearby_connections.dart';
 import 'package:permission_handler/permission_handler.dart';
 
+import '../../chat/models/chat_message.dart';
+import '../../chat/service/chat_storage_service.dart';
 import '../models/route_entry.dart';
 
 class MeshNetworkController extends GetxController {
@@ -44,12 +47,19 @@ class MeshNetworkController extends GetxController {
   var discoveredDevices = <String, String>{}.obs; // endpointId -> user name
   var blockedDevices = <String>[].obs; // blocked userIds
   var knownUsers = <String, String>{}.obs; // userId -> user name
-  var knownProfiles =
-      <String, Map<String, dynamic>>{}.obs; // userId -> name, avatar, image, publicKey, version
-  var chatMessages = <Map<String, dynamic>>[].obs;
+  var knownProfiles = <String, Map<String, dynamic>>{}
+      .obs; // userId -> name, avatar, image, publicKey, version
 
-  void Function(Map<String, dynamic> message)? onMessageReceived;
+  final StreamController<ChatMessage> _messageStreamController =
+      StreamController<ChatMessage>.broadcast();
+  Stream<ChatMessage> get messageStream => _messageStreamController.stream;
+  ChatStorageService get _chatStorage => Get.find<ChatStorageService>();
 
+  final StreamController<SeenUpdate> _seenStreamController =
+      StreamController<SeenUpdate>.broadcast();
+  Stream<SeenUpdate> get seenStream => _seenStreamController.stream;
+
+  String get currentUserId => _currentUserId;
   final Set<String> _processedMessageIds = {};
   final int _maxCacheSize = 200;
 
@@ -205,7 +215,7 @@ class MeshNetworkController extends GetxController {
         !needsNearbyWifi || await Permission.nearbyWifiDevices.isGranted;
 
     batteryOptimizationDisabled.value =
-    await Permission.ignoreBatteryOptimizations.isGranted;
+        await Permission.ignoreBatteryOptimizations.isGranted;
 
     return bluetoothScanGranted.value &&
         bluetoothAdvertiseGranted.value &&
@@ -287,7 +297,7 @@ class MeshNetworkController extends GetxController {
     final String remoteUserId = _endpointUserIds[endpointId] ?? '';
     final bool isInitiator =
         remoteUserId.isEmpty ||
-            _shortId(_currentUserId).compareTo(_shortId(remoteUserId)) < 0;
+        _shortId(_currentUserId).compareTo(_shortId(remoteUserId)) < 0;
 
     if (isInitiator) {
       _requestConnection(localUserName, endpointId);
@@ -311,9 +321,9 @@ class MeshNetworkController extends GetxController {
   }
 
   Future<void> _requestConnection(
-      String localUserName,
-      String endpointId,
-      ) async {
+    String localUserName,
+    String endpointId,
+  ) async {
     if (connectedEndpoints.containsKey(endpointId) ||
         _pendingEndpoints.contains(endpointId)) {
       return;
@@ -354,9 +364,9 @@ class MeshNetworkController extends GetxController {
   }
 
   Future<void> _onConnectionInitiated(
-      String endpointId,
-      ConnectionInfo info,
-      ) async {
+    String endpointId,
+    ConnectionInfo info,
+  ) async {
     final parsed = _parseEndpointName(info.endpointName);
     final String remoteUserId = parsed[0];
 
@@ -396,8 +406,8 @@ class MeshNetworkController extends GetxController {
       _retryCounts.remove(endpointId);
       connectedEndpoints[endpointId] =
           _endpointNames[endpointId] ??
-              discoveredDevices[endpointId] ??
-              endpointId;
+          discoveredDevices[endpointId] ??
+          endpointId;
       _sendHandshake(endpointId);
       update();
     } else {
@@ -474,9 +484,9 @@ class MeshNetworkController extends GetxController {
   }
 
   Future<void> _handleIncomingPayload(
-      String senderEndpointId,
-      Uint8List rawBytes,
-      ) async {
+    String senderEndpointId,
+    Uint8List rawBytes,
+  ) async {
     try {
       final String? endpointUserId = _endpointUserIds[senderEndpointId];
       if (endpointUserId != null && _isBlockedUser(endpointUserId)) return;
@@ -521,7 +531,11 @@ class MeshNetworkController extends GetxController {
       final String currentUserId = _currentUserId;
 
       if (targetUserId == currentUserId) {
-        await _deliverToMe(packet);
+        if (packet['type'] == 'SEEN') {
+          await _deliverSeen(packet);
+        } else {
+          await _deliverToMe(packet);
+        }
         return;
       }
 
@@ -536,6 +550,74 @@ class MeshNetworkController extends GetxController {
     } catch (e) {
       _log("Dropped invalid payload from $senderEndpointId: $e");
     }
+  }
+
+  Future<void> _deliverSeen(Map<String, dynamic> packet) async {
+    final String senderId = packet['senderId'] as String;
+    final String body = packet['body'] as String;
+
+    final String? senderKey = knownProfiles[senderId]?['publicKey'] as String?;
+    if (senderKey == null || senderKey.isEmpty) return;
+
+    final String? plain = await _crypto.decrypt(body, senderKey);
+    if (plain == null) return;
+
+    List<String> ids;
+    try {
+      final decoded = jsonDecode(plain);
+      if (decoded is! List) return;
+      ids = decoded.whereType<String>().take(100).toList();
+    } catch (e) {
+      return;
+    }
+    if (ids.isEmpty) return;
+
+    List<String> updated = [];
+    try {
+      updated = await _chatStorage.markOutgoingSeen(senderId, ids.toSet());
+    } catch (e) {
+      _log("Could not store seen state: $e");
+    }
+
+    if (updated.isNotEmpty && !_seenStreamController.isClosed) {
+      _seenStreamController.add(
+        SeenUpdate(peerId: senderId, messageIds: updated),
+      );
+    }
+  }
+
+  Future<bool> sendSeenReceipt(String peerId, List<String> messageIds) async {
+    if (messageIds.isEmpty || connectedEndpoints.isEmpty) return false;
+
+    final String? peerKey = knownProfiles[peerId]?['publicKey'] as String?;
+    if (peerKey == null || peerKey.isEmpty) return false;
+
+    String encrypted;
+    try {
+      encrypted = await _crypto.encrypt(
+        jsonEncode(messageIds.take(100).toList()),
+        peerKey,
+      );
+    } catch (e) {
+      _log("Receipt encryption failed: $e");
+      return false;
+    }
+
+    final String receiptId = _generateMessageId();
+    _rememberMessageId(receiptId);
+
+    final Map<String, dynamic> packet = {
+      "type": "SEEN",
+      "isLora": false,
+      "messageId": receiptId,
+      "senderId": _currentUserId,
+      "targetId": peerId,
+      "body": encrypted,
+      "hopCount": 0,
+      "ttl": _defaultTtl,
+    };
+
+    return _forwardPacket(packet) > 0;
   }
 
   Future<void> _deliverToMe(Map<String, dynamic> packet) async {
@@ -717,6 +799,16 @@ class MeshNetworkController extends GetxController {
       "publicKey": cleanPublicKey,
       "version": version,
     };
+    _chatStorage
+        .saveContact(
+          peerId: userId,
+          name: cleanName,
+          avatar: cleanAvatar,
+          image: cleanImage,
+        )
+        .catchError((Object e) {
+          _log("Could not save contact: $e");
+        });
     knownUsers[userId] = cleanName;
     _applyProfileToRoutes(userId);
 
@@ -807,9 +899,9 @@ class MeshNetworkController extends GetxController {
   }
 
   void _processRoutingUpdate(
-      String senderEndpointId,
-      Map<String, dynamic> packet,
-      ) {
+    String senderEndpointId,
+    Map<String, dynamic> packet,
+  ) {
     final routes = packet['routes'];
     if (routes is! List) return;
 
@@ -852,9 +944,9 @@ class MeshNetworkController extends GetxController {
     final List<String> staleDestinations = routingTable.entries
         .where(
           (e) =>
-      e.value.nextHopId == senderEndpointId &&
-          !advertisedDestinations.contains(e.key),
-    )
+              e.value.nextHopId == senderEndpointId &&
+              !advertisedDestinations.contains(e.key),
+        )
         .map((e) => e.key)
         .toList();
 
@@ -885,30 +977,49 @@ class MeshNetworkController extends GetxController {
     _routeRefreshTimer?.cancel();
     _routeRefreshTimer = Timer.periodic(
       Duration(seconds: _routeRefreshSeconds),
-          (_) => _broadcastRoutingTable(),
+      (_) => _broadcastRoutingTable(),
     );
   }
 
-  void _storeIncomingMessage(Map<String, dynamic> packet, String plainText) {
-    final Map<String, dynamic> message = {
-      "messageId": packet['messageId'],
-      "senderId": packet['senderId'],
-      "targetId": packet['targetId'],
-      "body": plainText,
-      "hopCount": packet['hopCount'] is int ? packet['hopCount'] : 0,
-      "timestamp": DateTime.now().millisecondsSinceEpoch,
-      "isMine": false,
-    };
+  Future<void> _storeIncomingMessage(
+    Map<String, dynamic> packet,
+    String plainText,
+  ) async {
+    final ChatMessage message = ChatMessage(
+      messageId: packet['messageId'] as String,
+      senderId: packet['senderId'] as String,
+      targetId: packet['targetId'] as String,
+      body: plainText,
+      timestamp: DateTime.now().millisecondsSinceEpoch,
+      hopCount: packet['hopCount'] is int ? packet['hopCount'] as int : 0,
+    );
+    await _saveAndEmit(message.senderId, message, isIncoming: true);
+  }
 
-    chatMessages.add(message);
-    onMessageReceived?.call(message);
-    update();
+  Future<void> _saveAndEmit(
+    String peerId,
+    ChatMessage message, {
+    required bool isIncoming,
+  }) async {
+    try {
+      await _chatStorage.saveMessage(
+        peerId: peerId,
+        peerName: displayNameOf(peerId),
+        message: message,
+        isIncoming: isIncoming,
+      );
+    } catch (e) {
+      _log("Could not save message: $e");
+    }
+    if (!_messageStreamController.isClosed) {
+      _messageStreamController.add(message);
+    }
   }
 
   void relayMessageToMesh(
-      String originEndpointId,
-      Map<String, dynamic> packet,
-      ) {
+    String originEndpointId,
+    Map<String, dynamic> packet,
+  ) {
     final int ttl = packet['ttl'] is int ? packet['ttl'] as int : 0;
     if (ttl <= 1) return;
 
@@ -963,17 +1074,17 @@ class MeshNetworkController extends GetxController {
   }
 
   Future<bool> broadcastMessage(
-      String targetUserId,
-      String messageBody,
-      bool isLora,
-      ) async {
+    String targetUserId,
+    String messageBody,
+    bool isLora,
+  ) async {
     if (connectedEndpoints.isEmpty) {
       _log("SEND FAIL: no connected endpoints");
       return false;
     }
 
     final String? peerPublicKey =
-    knownProfiles[targetUserId]?['publicKey'] as String?;
+        knownProfiles[targetUserId]?['publicKey'] as String?;
     if (peerPublicKey == null || peerPublicKey.isEmpty) {
       _log(
         "SEND FAIL: no public key for $targetUserId, known profiles: ${knownProfiles.keys.toList()}",
@@ -1005,20 +1116,23 @@ class MeshNetworkController extends GetxController {
 
     final int sentCount = _forwardPacket(packet);
     if (sentCount == 0) {
-      _log("SEND FAIL: forwardPacket sent 0 (payload too large or no endpoint)");
+      _log(
+        "SEND FAIL: forwardPacket sent 0 (payload too large or no endpoint)",
+      );
       return false;
     }
 
-    chatMessages.add({
-      "messageId": messageId,
-      "senderId": _currentUserId,
-      "targetId": targetUserId,
-      "body": messageBody,
-      "hopCount": 0,
-      "timestamp": DateTime.now().millisecondsSinceEpoch,
-      "isMine": true,
-    });
-    update();
+    await _saveAndEmit(
+      targetUserId,
+      ChatMessage(
+        messageId: messageId,
+        senderId: _currentUserId,
+        targetId: targetUserId,
+        body: messageBody,
+        timestamp: DateTime.now().millisecondsSinceEpoch,
+      ),
+      isIncoming: false,
+    );
     return true;
   }
 
@@ -1055,9 +1169,9 @@ class MeshNetworkController extends GetxController {
     final List<String> endpointsOfUser = _endpointUserIds.entries
         .where(
           (e) =>
-      _sameUser(e.value, userId) &&
-          connectedEndpoints.containsKey(e.key),
-    )
+              _sameUser(e.value, userId) &&
+              connectedEndpoints.containsKey(e.key),
+        )
         .map((e) => e.key)
         .toList();
 
@@ -1105,8 +1219,8 @@ class MeshNetworkController extends GetxController {
 
     final bool isNewBluetooth =
         permission == Permission.bluetoothScan ||
-            permission == Permission.bluetoothAdvertise ||
-            permission == Permission.bluetoothConnect;
+        permission == Permission.bluetoothAdvertise ||
+        permission == Permission.bluetoothConnect;
     final bool isNearbyWifi = permission == Permission.nearbyWifiDevices;
 
     if ((isNewBluetooth && sdk < 31) || (isNearbyWifi && sdk < 33)) {
@@ -1149,7 +1263,7 @@ class MeshNetworkController extends GetxController {
           title: Text("Battery Optimization"),
           content: Text(
             "For continuous mesh networking, please disable battery optimization. "
-                "This keeps HopTalk running in the background to relay messages.",
+            "This keeps HopTalk running in the background to relay messages.",
           ),
           actions: [
             TextButton(onPressed: () => Get.back(), child: Text("Cancel")),
@@ -1174,9 +1288,8 @@ class MeshNetworkController extends GetxController {
     list.sort((a, b) {
       final int byHops = a.hopCount.compareTo(b.hopCount);
       if (byHops != 0) return byHops;
-      return displayNameOf(a.destinationId).compareTo(
-        displayNameOf(b.destinationId),
-      );
+      return displayNameOf(a.destinationId)
+          .compareTo(displayNameOf(b.destinationId));
     });
 
     return list;
@@ -1200,6 +1313,8 @@ class MeshNetworkController extends GetxController {
     Nearby().stopDiscovery();
     Nearby().stopAllEndpoints();
     _resetState(notify: false);
+    _messageStreamController.close();
+    _seenStreamController.close();
     super.onClose();
   }
 

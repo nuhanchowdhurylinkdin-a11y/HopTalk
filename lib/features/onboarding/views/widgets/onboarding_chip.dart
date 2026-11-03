@@ -3,7 +3,7 @@ import 'dart:collection';
 import 'package:flutter/material.dart';
 
 import 'package:flutter_svg/flutter_svg.dart';
-import 'package:hop_talk/core/common/icon/icon_path.dart';
+import 'package:hop_talk/core/utils/constants/icon_path.dart';
 
 class OnboardChip extends StatelessWidget {
   const OnboardChip({
