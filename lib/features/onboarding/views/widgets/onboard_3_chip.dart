@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'package:hop_talk/core/common/icon/icon_path.dart';
+import 'package:hop_talk/core/utils/constants/icon_path.dart';
 import 'package:hop_talk/core/utils/constants/colors.dart';
 import 'package:hop_talk/features/onboarding/views/widgets/onboarding_chip.dart';
 
