@@ -167,13 +167,13 @@ class ChatController extends GetxController {
     }
   }
 
-  Future<bool> send(String text) async {
+  Future<bool> send(String text, {bool forceLora = false}) async {
     final String trimmed = text.trim();
     if (trimmed.isEmpty || _isSending) return false;
 
     _isSending = true;
     try {
-      return await _mesh.broadcastMessage(peerId, trimmed, false);
+      return await _mesh.broadcastMessage(peerId, trimmed, forceLora);
     } finally {
       _isSending = false;
     }

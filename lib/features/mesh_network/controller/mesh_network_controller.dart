@@ -1,23 +1,23 @@
 import 'dart:async';
 import 'dart:convert';
-
 import 'package:device_info_plus/device_info_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
 import 'package:get/get.dart';
+import 'package:hop_talk/features/chat/models/chat_message.dart';
+import 'package:hop_talk/features/chat/service/chat_storage_service.dart';
 import 'package:hop_talk/features/home/controller/home_controller.dart';
 import 'package:hop_talk/features/mesh_network/service/crypto_service.dart';
 import 'package:location/location.dart' as loc;
 import 'package:nearby_connections/nearby_connections.dart';
 import 'package:permission_handler/permission_handler.dart';
 
-import '../../chat/models/chat_message.dart';
-import '../../chat/service/chat_storage_service.dart';
 import '../models/route_entry.dart';
 
 class MeshNetworkController extends GetxController {
   HomeController get _homeController => Get.find<HomeController>();
+  ChatStorageService get _chatStorage => Get.find<ChatStorageService>();
 
   final CryptoService _crypto = CryptoService();
   final Map<String, List<Map<String, dynamic>>> _pendingIncoming = {};
@@ -28,6 +28,8 @@ class MeshNetworkController extends GetxController {
   late final _avatar = _homeController.userProfileData.value?.avatar ?? '';
   late final _compressedProfile =
       _homeController.userProfileData.value?.compressedImage ?? '';
+
+  String get currentUserId => _currentUserId;
 
   final String serviceId = "com.hoptalk.mesh";
   final Strategy strategy = Strategy.P2P_CLUSTER;
@@ -43,23 +45,23 @@ class MeshNetworkController extends GetxController {
   var nearbyWifiGranted = false.obs;
   var batteryOptimizationDisabled = false.obs;
 
+  var isEsp32Connected = false.obs;
+
   var connectedEndpoints = <String, String>{}.obs; // endpointId -> user name
   var discoveredDevices = <String, String>{}.obs; // endpointId -> user name
   var blockedDevices = <String>[].obs; // blocked userIds
   var knownUsers = <String, String>{}.obs; // userId -> user name
-  var knownProfiles = <String, Map<String, dynamic>>{}
-      .obs; // userId -> name, avatar, image, publicKey, version
+  var knownProfiles =
+      <String, Map<String, dynamic>>{}.obs; // userId -> name, avatar, image, publicKey, version
 
   final StreamController<ChatMessage> _messageStreamController =
-      StreamController<ChatMessage>.broadcast();
+  StreamController<ChatMessage>.broadcast();
   Stream<ChatMessage> get messageStream => _messageStreamController.stream;
-  ChatStorageService get _chatStorage => Get.find<ChatStorageService>();
 
   final StreamController<SeenUpdate> _seenStreamController =
-      StreamController<SeenUpdate>.broadcast();
+  StreamController<SeenUpdate>.broadcast();
   Stream<SeenUpdate> get seenStream => _seenStreamController.stream;
 
-  String get currentUserId => _currentUserId;
   final Set<String> _processedMessageIds = {};
   final int _maxCacheSize = 200;
 
@@ -109,6 +111,7 @@ class MeshNetworkController extends GetxController {
         hopCount: 0,
         avatar: _sanitizeAvatar(_avatar),
         imageByte: _ownImage,
+        hasEsp32: isEsp32Connected.value,
       );
 
       await startMeshNode(_userName);
@@ -215,7 +218,7 @@ class MeshNetworkController extends GetxController {
         !needsNearbyWifi || await Permission.nearbyWifiDevices.isGranted;
 
     batteryOptimizationDisabled.value =
-        await Permission.ignoreBatteryOptimizations.isGranted;
+    await Permission.ignoreBatteryOptimizations.isGranted;
 
     return bluetoothScanGranted.value &&
         bluetoothAdvertiseGranted.value &&
@@ -297,7 +300,7 @@ class MeshNetworkController extends GetxController {
     final String remoteUserId = _endpointUserIds[endpointId] ?? '';
     final bool isInitiator =
         remoteUserId.isEmpty ||
-        _shortId(_currentUserId).compareTo(_shortId(remoteUserId)) < 0;
+            _shortId(_currentUserId).compareTo(_shortId(remoteUserId)) < 0;
 
     if (isInitiator) {
       _requestConnection(localUserName, endpointId);
@@ -321,9 +324,9 @@ class MeshNetworkController extends GetxController {
   }
 
   Future<void> _requestConnection(
-    String localUserName,
-    String endpointId,
-  ) async {
+      String localUserName,
+      String endpointId,
+      ) async {
     if (connectedEndpoints.containsKey(endpointId) ||
         _pendingEndpoints.contains(endpointId)) {
       return;
@@ -364,9 +367,9 @@ class MeshNetworkController extends GetxController {
   }
 
   Future<void> _onConnectionInitiated(
-    String endpointId,
-    ConnectionInfo info,
-  ) async {
+      String endpointId,
+      ConnectionInfo info,
+      ) async {
     final parsed = _parseEndpointName(info.endpointName);
     final String remoteUserId = parsed[0];
 
@@ -406,8 +409,8 @@ class MeshNetworkController extends GetxController {
       _retryCounts.remove(endpointId);
       connectedEndpoints[endpointId] =
           _endpointNames[endpointId] ??
-          discoveredDevices[endpointId] ??
-          endpointId;
+              discoveredDevices[endpointId] ??
+              endpointId;
       _sendHandshake(endpointId);
       update();
     } else {
@@ -484,9 +487,9 @@ class MeshNetworkController extends GetxController {
   }
 
   Future<void> _handleIncomingPayload(
-    String senderEndpointId,
-    Uint8List rawBytes,
-  ) async {
+      String senderEndpointId,
+      Uint8List rawBytes,
+      ) async {
     try {
       final String? endpointUserId = _endpointUserIds[senderEndpointId];
       if (endpointUserId != null && _isBlockedUser(endpointUserId)) return;
@@ -528,10 +531,9 @@ class MeshNetworkController extends GetxController {
       }
 
       final bool isForLoraModule = packet['isLora'] == true;
-      final String currentUserId = _currentUserId;
 
-      if (targetUserId == currentUserId) {
-        if (packet['type'] == 'SEEN') {
+      if (targetUserId == _currentUserId) {
+        if (type == 'SEEN') {
           await _deliverSeen(packet);
         } else {
           await _deliverToMe(packet);
@@ -539,17 +541,39 @@ class MeshNetworkController extends GetxController {
         return;
       }
 
-      bool isConnectedToESP32 = false;
-      if (isConnectedToESP32 && isForLoraModule) {
-        // if ESP32 is connected and if the message is for LORA Gateway
-        sendToEsp32LoraGateway(jsonString);
-      } else {
-        // if the message is for another just hop and push forword
-        relayMessageToMesh(senderEndpointId, packet);
+      if (isForLoraModule && packet['gw'] == _currentUserId) {
+        if (isEsp32Connected.value) {
+          sendToEsp32LoraGateway(jsonString);
+        } else {
+          _log("LoRa message dropped: I am the chosen gateway but ESP32 is not connected");
+        }
+        return;
       }
+
+      relayMessageToMesh(senderEndpointId, packet);
     } catch (e) {
       _log("Dropped invalid payload from $senderEndpointId: $e");
     }
+  }
+
+  Future<void> _deliverToMe(Map<String, dynamic> packet) async {
+    final String senderId = packet['senderId'] as String;
+    final String body = packet['body'] as String;
+
+    final String? senderKey = knownProfiles[senderId]?['publicKey'] as String?;
+    if (senderKey == null || senderKey.isEmpty) {
+      final list = _pendingIncoming.putIfAbsent(senderId, () => []);
+      if (list.length < _maxPendingPerSender) list.add(packet);
+      return;
+    }
+
+    final String? plainText = await _crypto.decrypt(body, senderKey);
+    if (plainText == null) {
+      _log("Could not decrypt message from $senderId");
+      return;
+    }
+
+    await _storeIncomingMessage(packet, plainText);
   }
 
   Future<void> _deliverSeen(Map<String, dynamic> packet) async {
@@ -620,26 +644,6 @@ class MeshNetworkController extends GetxController {
     return _forwardPacket(packet) > 0;
   }
 
-  Future<void> _deliverToMe(Map<String, dynamic> packet) async {
-    final String senderId = packet['senderId'] as String;
-    final String body = packet['body'] as String;
-
-    final String? senderKey = knownProfiles[senderId]?['publicKey'] as String?;
-    if (senderKey == null || senderKey.isEmpty) {
-      final list = _pendingIncoming.putIfAbsent(senderId, () => []);
-      if (list.length < _maxPendingPerSender) list.add(packet);
-      return;
-    }
-
-    final String? plainText = await _crypto.decrypt(body, senderKey);
-    if (plainText == null) {
-      _log("Could not decrypt message from $senderId");
-      return;
-    }
-
-    _storeIncomingMessage(packet, plainText);
-  }
-
   Future<void> _flushPendingFor(String userId) async {
     final List<Map<String, dynamic>>? list = _pendingIncoming.remove(userId);
     if (list == null) return;
@@ -680,10 +684,20 @@ class MeshNetworkController extends GetxController {
   }
 
   void _addDirectNeighbor(String endpointId, String userId) {
-    routingTable[userId] = _newRoute(userId, endpointId, 1);
+    routingTable[userId] = _newRoute(
+      userId,
+      endpointId,
+      1,
+      hasEsp32: routingTable[userId]?.hasEsp32 ?? false,
+    );
   }
 
-  RouteEntry _newRoute(String destId, String nextHopId, int hopCount) {
+  RouteEntry _newRoute(
+      String destId,
+      String nextHopId,
+      int hopCount, {
+        bool hasEsp32 = false,
+      }) {
     final Map<String, dynamic>? profile = knownProfiles[destId];
     return RouteEntry(
       destinationId: destId,
@@ -691,13 +705,19 @@ class MeshNetworkController extends GetxController {
       hopCount: hopCount,
       avatar: (profile?['avatar'] as String?) ?? '',
       imageByte: (profile?['image'] as String?) ?? '',
+      hasEsp32: hasEsp32,
     );
   }
 
   void _applyProfileToRoutes(String userId) {
     final RouteEntry? entry = routingTable[userId];
     if (entry == null) return;
-    routingTable[userId] = _newRoute(userId, entry.nextHopId, entry.hopCount);
+    routingTable[userId] = _newRoute(
+      userId,
+      entry.nextHopId,
+      entry.hopCount,
+      hasEsp32: entry.hasEsp32,
+    );
   }
 
   Uint8List _profileBytes({
@@ -769,7 +789,6 @@ class MeshNetworkController extends GetxController {
     final String cleanImage = _sanitizeImage(packet['image']);
 
     final Map<String, dynamic>? existing = knownProfiles[userId];
-    _log("PROFILE accepted for $userId");
     bool shouldAccept;
     if (existing == null) {
       shouldAccept = true;
@@ -799,18 +818,20 @@ class MeshNetworkController extends GetxController {
       "publicKey": cleanPublicKey,
       "version": version,
     };
+    knownUsers[userId] = cleanName;
+    _log("PROFILE accepted for $userId");
+    _applyProfileToRoutes(userId);
+
     _chatStorage
         .saveContact(
-          peerId: userId,
-          name: cleanName,
-          avatar: cleanAvatar,
-          image: cleanImage,
-        )
+      peerId: userId,
+      name: cleanName,
+      avatar: cleanAvatar,
+      image: cleanImage,
+    )
         .catchError((Object e) {
-          _log("Could not save contact: $e");
-        });
-    knownUsers[userId] = cleanName;
-    _applyProfileToRoutes(userId);
+      _log("Could not save contact: $e");
+    });
 
     final Uint8List bytes = _profileBytes(
       userId: userId,
@@ -874,6 +895,7 @@ class MeshNetworkController extends GetxController {
       routesList.add({
         "destinationId": entry.destinationId,
         "hopCount": entry.hopCount,
+        "gw": entry.hasEsp32,
       });
     });
 
@@ -899,9 +921,9 @@ class MeshNetworkController extends GetxController {
   }
 
   void _processRoutingUpdate(
-    String senderEndpointId,
-    Map<String, dynamic> packet,
-  ) {
+      String senderEndpointId,
+      Map<String, dynamic> packet,
+      ) {
     final routes = packet['routes'];
     if (routes is! List) return;
 
@@ -916,6 +938,8 @@ class MeshNetworkController extends GetxController {
       if (destId is! String || incomingHops is! int) continue;
       if (destId == _currentUserId) continue;
 
+      final bool incomingGw = route['gw'] == true;
+
       final int calculatedHops = incomingHops + 1;
       if (calculatedHops > _maxHops) continue;
 
@@ -926,16 +950,24 @@ class MeshNetworkController extends GetxController {
       if (existing == null) {
         shouldReplace = true;
       } else if (existing.nextHopId == senderEndpointId) {
-        shouldReplace = existing.hopCount != calculatedHops;
+        shouldReplace =
+            existing.hopCount != calculatedHops ||
+                existing.hasEsp32 != incomingGw;
       } else {
         shouldReplace = existing.hopCount > calculatedHops;
       }
 
       if (shouldReplace) {
+        if (existing == null || existing.hasEsp32 != incomingGw) {
+          _log(
+            "Route ${_shortId(destId)} gateway=$incomingGw hops=$calculatedHops",
+          );
+        }
         routingTable[destId] = _newRoute(
           destId,
           senderEndpointId,
           calculatedHops,
+          hasEsp32: incomingGw,
         );
         isTableChanged = true;
       }
@@ -944,9 +976,9 @@ class MeshNetworkController extends GetxController {
     final List<String> staleDestinations = routingTable.entries
         .where(
           (e) =>
-              e.value.nextHopId == senderEndpointId &&
-              !advertisedDestinations.contains(e.key),
-        )
+      e.value.nextHopId == senderEndpointId &&
+          !advertisedDestinations.contains(e.key),
+    )
         .map((e) => e.key)
         .toList();
 
@@ -977,14 +1009,14 @@ class MeshNetworkController extends GetxController {
     _routeRefreshTimer?.cancel();
     _routeRefreshTimer = Timer.periodic(
       Duration(seconds: _routeRefreshSeconds),
-      (_) => _broadcastRoutingTable(),
+          (_) => _broadcastRoutingTable(),
     );
   }
 
   Future<void> _storeIncomingMessage(
-    Map<String, dynamic> packet,
-    String plainText,
-  ) async {
+      Map<String, dynamic> packet,
+      String plainText,
+      ) async {
     final ChatMessage message = ChatMessage(
       messageId: packet['messageId'] as String,
       senderId: packet['senderId'] as String,
@@ -997,10 +1029,10 @@ class MeshNetworkController extends GetxController {
   }
 
   Future<void> _saveAndEmit(
-    String peerId,
-    ChatMessage message, {
-    required bool isIncoming,
-  }) async {
+      String peerId,
+      ChatMessage message, {
+        required bool isIncoming,
+      }) async {
     try {
       await _chatStorage.saveMessage(
         peerId: peerId,
@@ -1017,9 +1049,9 @@ class MeshNetworkController extends GetxController {
   }
 
   void relayMessageToMesh(
-    String originEndpointId,
-    Map<String, dynamic> packet,
-  ) {
+      String originEndpointId,
+      Map<String, dynamic> packet,
+      ) {
     final int ttl = packet['ttl'] is int ? packet['ttl'] as int : 0;
     if (ttl <= 1) return;
 
@@ -1038,7 +1070,12 @@ class MeshNetworkController extends GetxController {
     final Uint8List bytes = Uint8List.fromList(utf8.encode(jsonEncode(packet)));
     if (bytes.length > _maxPayloadBytes) return 0;
 
-    final RouteEntry? route = routingTable[packet['targetId']];
+    final dynamic gateway = packet['gw'];
+    final String routeKey = (packet['isLora'] == true && gateway is String)
+        ? gateway
+        : packet['targetId'] as String;
+
+    final RouteEntry? route = routingTable[routeKey];
     if (route != null &&
         route.nextHopId != 'SELF' &&
         route.nextHopId != originEndpointId &&
@@ -1057,8 +1094,47 @@ class MeshNetworkController extends GetxController {
     return sentCount;
   }
 
-  void sendToEsp32LoraGateway(String payloadString) {
-    _log("Forwarded to LoRa via ESP32");
+  RouteEntry? bestGateway() {
+    RouteEntry? best;
+    for (final entry in routingTable.values) {
+      if (!entry.hasEsp32) continue;
+      if (best == null || entry.hopCount < best.hopCount) best = entry;
+    }
+    return best;
+  }
+
+  List<RouteEntry> get gateways {
+    final List<RouteEntry> list = routingTable.values
+        .where((e) => e.hasEsp32)
+        .toList();
+    list.sort((a, b) => a.hopCount.compareTo(b.hopCount));
+    return list;
+  }
+
+  void setEsp32Connected(bool value) {
+    if (isEsp32Connected.value == value) return;
+    isEsp32Connected.value = value;
+    _log("ESP32 connected: $value");
+
+    final RouteEntry? self = routingTable[_currentUserId];
+    if (self != null) {
+      routingTable[_currentUserId] = RouteEntry(
+        destinationId: self.destinationId,
+        nextHopId: 'SELF',
+        hopCount: 0,
+        avatar: self.avatar,
+        imageByte: self.imageByte,
+        hasEsp32: value,
+      );
+      _broadcastRoutingTable();
+    }
+    update();
+  }
+
+  bool sendToEsp32LoraGateway(String payloadString) {
+    if (!isEsp32Connected.value) return false;
+    _log("[LORA TX] ${payloadString.length} bytes handed to ESP32");
+    return true;
   }
 
   Future<void> _sendBytes(String endpointId, Uint8List bytes) async {
@@ -1074,21 +1150,29 @@ class MeshNetworkController extends GetxController {
   }
 
   Future<bool> broadcastMessage(
-    String targetUserId,
-    String messageBody,
-    bool isLora,
-  ) async {
-    if (connectedEndpoints.isEmpty) {
-      _log("SEND FAIL: no connected endpoints");
-      return false;
-    }
-
+      String targetUserId,
+      String messageBody,
+      bool isLora,
+      ) async {
     final String? peerPublicKey =
-        knownProfiles[targetUserId]?['publicKey'] as String?;
+    knownProfiles[targetUserId]?['publicKey'] as String?;
     if (peerPublicKey == null || peerPublicKey.isEmpty) {
       _log(
         "SEND FAIL: no public key for $targetUserId, known profiles: ${knownProfiles.keys.toList()}",
       );
+      return false;
+    }
+
+    final RouteEntry? gateway = bestGateway();
+    final bool useLora =
+        isLora || (!routingTable.containsKey(targetUserId) && gateway != null);
+
+    if (useLora && gateway == null) {
+      _log("SEND FAIL: no LoRa gateway reachable");
+      return false;
+    }
+    if (!useLora && connectedEndpoints.isEmpty) {
+      _log("SEND FAIL: no connected endpoints");
       return false;
     }
 
@@ -1103,7 +1187,7 @@ class MeshNetworkController extends GetxController {
     final String messageId = _generateMessageId();
 
     Map<String, dynamic> packet = {
-      "isLora": isLora,
+      "isLora": useLora,
       "messageId": messageId,
       "senderId": _currentUserId,
       "targetId": targetUserId,
@@ -1112,14 +1196,26 @@ class MeshNetworkController extends GetxController {
       "ttl": _defaultTtl,
     };
 
+    if (useLora) {
+      packet["gw"] = gateway!.destinationId;
+    }
+
     _rememberMessageId(messageId);
 
-    final int sentCount = _forwardPacket(packet);
+    int sentCount;
+    if (useLora && gateway!.nextHopId == 'SELF') {
+      sentCount = sendToEsp32LoraGateway(jsonEncode(packet)) ? 1 : 0;
+    } else {
+      sentCount = _forwardPacket(packet);
+    }
+
     if (sentCount == 0) {
-      _log(
-        "SEND FAIL: forwardPacket sent 0 (payload too large or no endpoint)",
-      );
+      _log("SEND FAIL: nothing was sent (payload too large or no endpoint)");
       return false;
+    }
+
+    if (useLora) {
+      _log("Message queued for LoRa via gateway ${_shortId(gateway!.destinationId)}");
     }
 
     await _saveAndEmit(
@@ -1169,9 +1265,9 @@ class MeshNetworkController extends GetxController {
     final List<String> endpointsOfUser = _endpointUserIds.entries
         .where(
           (e) =>
-              _sameUser(e.value, userId) &&
-              connectedEndpoints.containsKey(e.key),
-        )
+      _sameUser(e.value, userId) &&
+          connectedEndpoints.containsKey(e.key),
+    )
         .map((e) => e.key)
         .toList();
 
@@ -1219,8 +1315,8 @@ class MeshNetworkController extends GetxController {
 
     final bool isNewBluetooth =
         permission == Permission.bluetoothScan ||
-        permission == Permission.bluetoothAdvertise ||
-        permission == Permission.bluetoothConnect;
+            permission == Permission.bluetoothAdvertise ||
+            permission == Permission.bluetoothConnect;
     final bool isNearbyWifi = permission == Permission.nearbyWifiDevices;
 
     if ((isNewBluetooth && sdk < 31) || (isNearbyWifi && sdk < 33)) {
@@ -1263,7 +1359,7 @@ class MeshNetworkController extends GetxController {
           title: Text("Battery Optimization"),
           content: Text(
             "For continuous mesh networking, please disable battery optimization. "
-            "This keeps HopTalk running in the background to relay messages.",
+                "This keeps HopTalk running in the background to relay messages.",
           ),
           actions: [
             TextButton(onPressed: () => Get.back(), child: Text("Cancel")),
@@ -1288,8 +1384,9 @@ class MeshNetworkController extends GetxController {
     list.sort((a, b) {
       final int byHops = a.hopCount.compareTo(b.hopCount);
       if (byHops != 0) return byHops;
-      return displayNameOf(a.destinationId)
-          .compareTo(displayNameOf(b.destinationId));
+      return displayNameOf(
+        a.destinationId,
+      ).compareTo(displayNameOf(b.destinationId));
     });
 
     return list;

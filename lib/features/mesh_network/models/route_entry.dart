@@ -4,12 +4,14 @@ class RouteEntry {
   final int hopCount;
   final String avatar;
   final String imageByte;
+  final bool hasEsp32;
 
-  RouteEntry({
+  const RouteEntry({
     required this.destinationId,
     required this.nextHopId,
     required this.hopCount,
-    required this.avatar,
-    required this.imageByte,
+    this.avatar = '',
+    this.imageByte = '',
+    this.hasEsp32 = false,
   });
 }

@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:hop_talk/core/utils/constants/colors.dart';
@@ -64,6 +65,15 @@ class HomeScreen extends GetView<HomeController> {
               ),
             );
           }),
+
+          if (kDebugMode)
+            Obx(() {
+              final mesh = controller.meshController!;
+              return Switch(
+                value: mesh.isEsp32Connected.value,
+                onChanged: mesh.setEsp32Connected,
+              );
+            }),
         ],
       ),
       body: GetBuilder<MeshNetworkController>(
