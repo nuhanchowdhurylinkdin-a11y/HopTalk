@@ -46,3 +46,6 @@ app.*.map.json
 
 # Widget Preview related
 .widget_preview/
+
+# Development guides and notes
+ESP32_BLE_LORA_GUIDE.md

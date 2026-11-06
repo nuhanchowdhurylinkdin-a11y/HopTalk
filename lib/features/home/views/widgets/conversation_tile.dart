@@ -55,16 +55,19 @@ class ConversationTile extends StatelessWidget {
 
     final route = mesh.routingTable[peerId];
     final bool isOnline = route != null && route.nextHopId != 'SELF';
+    final bool viaLora = !isOnline && mesh.bestGateway() != null;
 
-    final TextStyle? subtitleStyle = unread > 0
+    final TextStyle subtitleStyle = unread > 0
         ? const TextStyle(fontWeight: FontWeight.w600, color: Colors.black87)
         : const TextStyle(color: Colors.black54);
 
     Widget subtitle;
     if (lastBody.isEmpty) {
-      final String status = !isOnline
-          ? "Offline"
-          : (route.hopCount == 1 ? "Connected" : "${route.hopCount} hops away");
+      final String status = viaLora
+          ? "Via LoRa"
+          : !isOnline
+              ? "Offline"
+              : (route.hopCount == 1 ? "Connected" : "${route.hopCount} hops away");
       subtitle = Text(status, style: const TextStyle(color: Colors.black54));
     } else {
       subtitle = Row(
@@ -115,7 +118,9 @@ class ConversationTile extends StatelessWidget {
               width: 12,
               height: 12,
               decoration: BoxDecoration(
-                color: isOnline ? Colors.green : Colors.grey,
+                color: viaLora
+                    ? Colors.orange
+                    : (isOnline ? Colors.green : Colors.grey),
                 shape: BoxShape.circle,
                 border: Border.all(color: Colors.white, width: 2),
               ),

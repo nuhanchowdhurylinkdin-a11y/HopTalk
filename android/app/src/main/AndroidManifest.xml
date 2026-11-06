@@ -19,6 +19,9 @@
     <!-- Battery Optimization Permission -->
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
+    <!-- Camera Permission for QR scanning -->
+    <uses-permission android:name="android.permission.CAMERA" />
+
     <application
         android:label="hop_talk"
         android:name="${applicationName}"

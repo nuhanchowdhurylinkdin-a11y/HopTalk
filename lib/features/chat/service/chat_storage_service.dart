@@ -86,7 +86,7 @@ class ChatStorageService extends GetxService {
     final String name = _boxName(peerId);
     final Future<LazyBox<ChatMessage>> future = _openBoxes.putIfAbsent(
       name,
-          () => _openConversationBox(name),
+      () => _openConversationBox(name),
     );
 
     try {
@@ -111,7 +111,12 @@ class ChatStorageService extends GetxService {
 
   Map<String, dynamic> _meta(String peerId) {
     final dynamic existing = _conversations.get(peerId);
-    if (existing is Map) return Map<String, dynamic>.from(existing);
+    if (existing is Map) {
+      final Map<String, dynamic> meta = Map<String, dynamic>.from(existing);
+      meta.putIfAbsent('publicKey', () => '');
+      meta.putIfAbsent('qr', () => false);
+      return meta;
+    }
 
     return {
       'peerId': peerId,
@@ -124,6 +129,8 @@ class ChatStorageService extends GetxService {
       'lastMessageId': '',
       'lastMessageSeen': false,
       'unreadCount': 0,
+      'publicKey': '',
+      'qr': false,
     };
   }
 
@@ -132,21 +139,45 @@ class ChatStorageService extends GetxService {
     required String name,
     required String avatar,
     required String image,
+    String? publicKey,
+    bool? qr,
   }) async {
     final bool exists = _conversations.containsKey(peerId);
     final Map<String, dynamic> meta = _meta(peerId);
 
+    final String oldKey = (meta['publicKey'] as String?) ?? '';
+    final String newKey = publicKey ?? oldKey;
+    final bool oldQr = meta['qr'] == true;
+    final bool newQr = qr ?? oldQr;
+
     if (exists &&
         meta['peerName'] == name &&
         meta['avatar'] == avatar &&
-        meta['image'] == image) {
+        meta['image'] == image &&
+        oldKey == newKey &&
+        oldQr == newQr) {
       return;
     }
 
     meta['peerName'] = name;
     meta['avatar'] = avatar;
     meta['image'] = image;
+    if (publicKey != null) {
+      meta['publicKey'] = publicKey;
+    }
+    if (qr != null) {
+      meta['qr'] = qr;
+    }
     await _conversations.put(peerId, meta);
+  }
+
+  List<Map<String, dynamic>> getQrContacts() =>
+      getConversations().where((c) => c['qr'] == true).toList();
+
+  String pinnedKeyOf(String peerId) {
+    final dynamic d = _conversations.get(peerId);
+    if (d is Map) return (d['publicKey'] as String?) ?? '';
+    return '';
   }
 
   Future<void> saveMessage({
@@ -185,10 +216,10 @@ class ChatStorageService extends GetxService {
   }
 
   Future<ChatPage> loadPage(
-      String peerId, {
-        int? beforeKey,
-        int limit = 30,
-      }) async {
+    String peerId, {
+    int? beforeKey,
+    int limit = 30,
+  }) async {
     final LazyBox<ChatMessage> box = await _boxFor(peerId);
 
     final List<int> keys = box.keys.cast<int>().toList()..sort();

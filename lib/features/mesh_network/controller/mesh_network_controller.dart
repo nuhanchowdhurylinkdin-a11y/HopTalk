@@ -14,6 +14,7 @@ import 'package:nearby_connections/nearby_connections.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import '../models/route_entry.dart';
+import '../models/qr_contact.dart';
 
 class MeshNetworkController extends GetxController {
   HomeController get _homeController => Get.find<HomeController>();
@@ -30,6 +31,11 @@ class MeshNetworkController extends GetxController {
       _homeController.userProfileData.value?.compressedImage ?? '';
 
   String get currentUserId => _currentUserId;
+  String get publicKeyBase64 => _crypto.publicKeyBase64;
+
+  String get myFingerprint => QrContactData.fingerprintOf(_crypto.publicKeyBase64);
+
+  static const String keyChangedError = 'KEY_CHANGED';
 
   final String serviceId = "com.hoptalk.mesh";
   final Strategy strategy = Strategy.P2P_CLUSTER;
@@ -82,6 +88,9 @@ class MeshNetworkController extends GetxController {
   final int _shortIdLength = 16;
   final int _maxProfileNameLength = 30;
   final int _maxProfileImageChars = 12000;
+
+  final bool _simulateLoraLoopback = true;
+  final int _simulatedLoraDelayMs = 1500;
 
   int _messageCounter = 0;
   int? _sdkInt;
@@ -755,6 +764,7 @@ class MeshNetworkController extends GetxController {
 
     knownProfiles.forEach((userId, profile) {
       if (_sameUser(userId, remoteUserId)) return;
+      if (profile['local'] == true) return;
       _sendBytes(
         endpointId,
         _profileBytes(
@@ -1134,7 +1144,71 @@ class MeshNetworkController extends GetxController {
   bool sendToEsp32LoraGateway(String payloadString) {
     if (!isEsp32Connected.value) return false;
     _log("[LORA TX] ${payloadString.length} bytes handed to ESP32");
+
+    if (_simulateLoraLoopback) {
+      Future.delayed(Duration(milliseconds: _simulatedLoraDelayMs), () {
+        if (isClosed) return;
+        try {
+          final decoded = jsonDecode(payloadString);
+          if (decoded is Map<String, dynamic>) {
+            handleLoraReceived(decoded);
+          }
+        } catch (e) {
+          _log("Simulated LoRa RX failed: $e");
+        }
+      });
+    }
+
     return true;
+  }
+
+  void handleLoraReceived(Map<String, dynamic> packet) {
+    if (!isEsp32Connected.value) return;
+
+    final messageId = packet['messageId'];
+    final targetId = packet['targetId'];
+    final senderId = packet['senderId'];
+    final body = packet['body'];
+
+    if (messageId is! String ||
+        targetId is! String ||
+        senderId is! String ||
+        body is! String) {
+      return;
+    }
+
+    if (_isBlockedUser(senderId)) return;
+
+    if (!_rememberMessageId('lora_$messageId')) {
+      _log("[LORA RX] duplicate ignored");
+      return;
+    }
+
+    _log(
+      "[LORA RX] message for ${_shortId(targetId)} from ${_shortId(senderId)}",
+    );
+
+    final Map<String, dynamic> injected = Map<String, dynamic>.from(packet);
+    injected['isLora'] = false;
+    injected.remove('gw');
+    injected['ttl'] = _defaultTtl;
+    injected['viaLora'] = true;
+
+    if (targetId == _currentUserId) {
+      _deliverToMe(injected).catchError((Object e) {
+        _log("LoRa delivery failed: $e");
+      });
+      return;
+    }
+
+    if (!routingTable.containsKey(targetId)) {
+      _log(
+        "[LORA RX] target ${_shortId(targetId)} is not in my mesh, message dropped",
+      );
+      return;
+    }
+
+    _forwardPacket(injected);
   }
 
   Future<void> _sendBytes(String endpointId, Uint8List bytes) async {
@@ -1164,15 +1238,16 @@ class MeshNetworkController extends GetxController {
     }
 
     final RouteEntry? gateway = bestGateway();
+    final bool hasRoute = routingTable.containsKey(targetUserId);
     final bool useLora =
-        isLora || (!routingTable.containsKey(targetUserId) && gateway != null);
+        isLora || (!hasRoute && gateway != null);
 
     if (useLora && gateway == null) {
       _log("SEND FAIL: no LoRa gateway reachable");
       return false;
     }
-    if (!useLora && connectedEndpoints.isEmpty) {
-      _log("SEND FAIL: no connected endpoints");
+    if (!useLora && !hasRoute && connectedEndpoints.isEmpty) {
+      _log("SEND FAIL: no route and no connected endpoints");
       return false;
     }
 
@@ -1398,8 +1473,143 @@ class MeshNetworkController extends GetxController {
     return userId.length > 6 ? userId.substring(0, 6) : userId;
   }
 
+  Future<String> buildMyQrPayload() async {
+    if (_crypto.publicKeyBase64.isEmpty) {
+      await _crypto.init();
+    }
+    return jsonEncode({
+      'v': 1,
+      'u': _currentUserId,
+      'n': _limitRunes(_userName, _maxProfileNameLength),
+      'k': _crypto.publicKeyBase64,
+      'a': _sanitizeAvatar(_avatar),
+    });
+  }
+
+  QrContactData? parseContactQr(String raw) {
+    try {
+      final decoded = jsonDecode(raw);
+      if (decoded is! Map<String, dynamic>) return null;
+
+      final int? version = decoded['v'] as int?;
+      if (version != 1) return null;
+
+      final String? userId = decoded['u'] as String?;
+      if (userId == null || userId.isEmpty || userId.length > 64) return null;
+
+      final dynamic nameRaw = decoded['n'];
+      if (nameRaw is! String) return null;
+      final String name = _limitRunes(nameRaw, _maxProfileNameLength);
+
+      final String publicKey = _sanitizePublicKey(decoded['k']);
+      if (publicKey.isEmpty) return null;
+
+      final String avatar = _sanitizeAvatar(decoded['a']);
+
+      return QrContactData(
+        userId: userId,
+        name: name,
+        publicKey: publicKey,
+        avatar: avatar,
+      );
+    } catch (e) {
+      return null;
+    }
+  }
+
+  String? validateQrContact(QrContactData data) {
+    if (_isSelf(data.userId)) {
+      return "You cannot add yourself as a contact";
+    }
+    if (_isBlockedUser(data.userId)) {
+      return "This user is blocked";
+    }
+    return null;
+  }
+
+  Future<String?> saveQrContact(QrContactData data, {bool replaceKey = false}) async {
+    final String pinnedKey = _chatStorage.pinnedKeyOf(data.userId);
+    if (pinnedKey.isNotEmpty && pinnedKey != data.publicKey && !replaceKey) {
+      return keyChangedError;
+    }
+
+    final Map<String, dynamic>? existing = knownProfiles[data.userId];
+    if (existing != null) {
+      final String existingKey = (existing['publicKey'] as String?) ?? '';
+      final bool isUnpinned = pinnedKey.isEmpty;
+      if (isUnpinned && existingKey.isNotEmpty && existingKey != data.publicKey) {
+        knownProfiles[data.userId] = {
+          'name': data.name,
+          'avatar': data.avatar,
+          'image': '',
+          'publicKey': data.publicKey,
+          'version': 0,
+          'local': true,
+        };
+      }
+    } else {
+      knownProfiles[data.userId] = {
+        'name': data.name,
+        'avatar': data.avatar,
+        'image': '',
+        'publicKey': data.publicKey,
+        'version': 0,
+        'local': true,
+      };
+    }
+
+    knownUsers[data.userId] = data.name;
+
+    try {
+      await _chatStorage.saveContact(
+        peerId: data.userId,
+        name: data.name,
+        avatar: data.avatar,
+        image: '',
+        publicKey: data.publicKey,
+        qr: true,
+      );
+    } catch (e) {
+      _log("Could not save QR contact: $e");
+      return "Failed to save contact: $e";
+    }
+
+    await _flushPendingFor(data.userId);
+    update();
+    return null;
+  }
+
+  void forgetContact(String peerId) {
+    knownProfiles.remove(peerId);
+    knownUsers.remove(peerId);
+    update();
+  }
+
+  Future<void> _loadSavedContacts() async {
+    final List<Map<String, dynamic>> qrContacts = _chatStorage.getQrContacts();
+    for (final conv in qrContacts) {
+      final String peerId = conv['peerId'] as String;
+      final String publicKey = (conv['publicKey'] as String?) ?? '';
+      if (publicKey.isEmpty) continue;
+
+      final String name = (conv['peerName'] as String?) ?? '';
+      final String avatar = (conv['avatar'] as String?) ?? '';
+
+      knownProfiles.putIfAbsent(peerId, () => {
+        'name': name,
+        'avatar': avatar,
+        'image': '',
+        'publicKey': publicKey,
+        'version': 0,
+        'local': true,
+      });
+      knownUsers[peerId] = name;
+    }
+  }
+
   @override
   void onInit() {
+    _loadSavedContacts();
     checkPermissions();
     super.onInit();
   }
