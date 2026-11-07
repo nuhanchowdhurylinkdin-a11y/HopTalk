@@ -1,5 +1,5 @@
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:get/get.dart';
 import 'package:hop_talk/core/utils/constants/colors.dart';
 import 'package:hop_talk/features/chat/service/chat_storage_service.dart';
@@ -25,8 +25,8 @@ class LoraTab extends StatelessWidget {
           return ListView(
             padding: const EdgeInsets.all(16),
             children: [
-              if (kDebugMode) _buildEsp32Card(mesh, esp32Connected),
-              if (kDebugMode) const SizedBox(height: 16),
+              _buildEsp32Card(mesh, esp32Connected),
+              const SizedBox(height: 16),
               _buildGatewaysSection(mesh),
               const SizedBox(height: 16),
               _buildQrContactsSection(mesh, storage, qrContacts, hasGateway),
@@ -60,23 +60,92 @@ class LoraTab extends StatelessWidget {
                 ),
               ],
             ),
-            if (kDebugMode) ...[
-              const SizedBox(height: 12),
-              Row(
-                children: [
-                  const Text("Mock connection:"),
-                  const SizedBox(width: 8),
-                  Switch(
-                    value: connected,
-                    onChanged: mesh.setEsp32Connected,
+            const SizedBox(height: 12),
+            if (connected)
+              OutlinedButton.icon(
+                onPressed: mesh.disconnectEsp32,
+                icon: const Icon(Icons.bluetooth_disabled),
+                label: const Text('Disconnect'),
+              )
+            else
+              Obx(
+                () => ElevatedButton.icon(
+                  onPressed: mesh.isEsp32Scanning.value
+                      ? null
+                      : () => _scanAndConnect(mesh),
+                  icon: mesh.isEsp32Scanning.value
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.bluetooth_searching),
+                  label: Text(
+                    mesh.isEsp32Scanning.value
+                        ? 'Scanning…'
+                        : 'Scan and connect',
                   ),
-                ],
+                ),
               ),
-            ],
           ],
         ),
       ),
     );
+  }
+
+  Future<void> _scanAndConnect(MeshNetworkController mesh) async {
+    final List<ScanResult> devices = await mesh.scanEsp32Devices();
+    if (devices.isEmpty) {
+      Get.snackbar(
+        'ESP32 not found',
+        'Check that the board is powered on and advertising the configured service UUID.',
+        snackPosition: SnackPosition.BOTTOM,
+      );
+      return;
+    }
+
+    final ScanResult? selected = await Get.dialog<ScanResult>(
+      AlertDialog(
+        title: const Text('Choose ESP32'),
+        content: SizedBox(
+          width: double.maxFinite,
+          child: ListView(
+            shrinkWrap: true,
+            children: devices
+                .map(
+                  (result) => ListTile(
+                    leading: const Icon(Icons.developer_board),
+                    title: Text(
+                      result.device.platformName.isEmpty
+                          ? 'ESP32 (${result.device.remoteId.str})'
+                          : result.device.platformName,
+                    ),
+                    subtitle: Text(result.device.remoteId.str),
+                    onTap: () => Get.back(result: result),
+                  ),
+                )
+                .toList(),
+          ),
+        ),
+        actions: [TextButton(onPressed: Get.back, child: const Text('Cancel'))],
+      ),
+    );
+    if (selected == null) return;
+
+    final connected = await mesh.connectEsp32(selected.device);
+    if (!connected) {
+      Get.snackbar(
+        'Connection failed',
+        mesh.esp32BleError ?? 'ESP32 BLE connection failed. Check device logs.',
+        snackPosition: SnackPosition.BOTTOM,
+      );
+    } else if (mesh.esp32UserIdSyncError != null) {
+      Get.snackbar(
+        'ESP32 connected; ID sync failed',
+        mesh.esp32UserIdSyncError!,
+        snackPosition: SnackPosition.BOTTOM,
+      );
+    }
   }
 
   Widget _buildGatewaysSection(MeshNetworkController mesh) {
@@ -104,7 +173,8 @@ class LoraTab extends StatelessWidget {
                 Builder(
                   builder: (context) {
                     final bool isSelf = gw.nextHopId == 'SELF';
-                    final bool isBest = bestGw != null &&
+                    final bool isBest =
+                        bestGw != null &&
                         gw.destinationId == bestGw.destinationId;
                     final String name = isSelf
                         ? "This phone"
@@ -123,9 +193,7 @@ class LoraTab extends StatelessWidget {
                             color: isBest ? Colors.green : Colors.grey,
                           ),
                           const SizedBox(width: 8),
-                          Expanded(
-                            child: Text("$name$hopInfo"),
-                          ),
+                          Expanded(child: Text("$name$hopInfo")),
                           if (isBest)
                             Container(
                               padding: const EdgeInsets.symmetric(
@@ -202,7 +270,8 @@ class LoraTab extends StatelessWidget {
                     final String image = (contact['image'] as String?) ?? '';
 
                     final dynamic route = mesh.routingTable[peerId];
-                    final bool isInMesh = route != null && route.nextHopId != 'SELF';
+                    final bool isInMesh =
+                        route != null && route.nextHopId != 'SELF';
 
                     String status;
                     if (isInMesh) {
@@ -250,15 +319,18 @@ class LoraTab extends StatelessWidget {
                                     color: isInMesh
                                         ? Colors.green
                                         : hasGateway
-                                            ? Colors.orange
-                                            : Colors.grey,
+                                        ? Colors.orange
+                                        : Colors.grey,
                                   ),
                                 ),
                               ],
                             ),
                           ),
                           IconButton(
-                            icon: const Icon(Icons.chat, color: AppColors.primary),
+                            icon: const Icon(
+                              Icons.chat,
+                              color: AppColors.primary,
+                            ),
                             onPressed: () => Get.to(
                               () => ChatScreen(
                                 peerId: peerId,
@@ -270,12 +342,8 @@ class LoraTab extends StatelessWidget {
                           ),
                           IconButton(
                             icon: const Icon(Icons.delete, color: Colors.red),
-                            onPressed: () => _confirmDelete(
-                              storage,
-                              mesh,
-                              peerId,
-                              name,
-                            ),
+                            onPressed: () =>
+                                _confirmDelete(storage, mesh, peerId, name),
                           ),
                         ],
                       ),

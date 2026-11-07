@@ -1,6 +1,8 @@
 import 'dart:async';
 import 'dart:convert';
+
 import 'package:device_info_plus/device_info_plus.dart';
+import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_image_compress/flutter_image_compress.dart';
@@ -15,12 +17,21 @@ import 'package:permission_handler/permission_handler.dart';
 
 import '../models/route_entry.dart';
 import '../models/qr_contact.dart';
+import '../models/lora_packet.dart';
+import '../service/lora_codec.dart';
+import '../service/esp32_ble_service.dart';
 
 class MeshNetworkController extends GetxController {
   HomeController get _homeController => Get.find<HomeController>();
   ChatStorageService get _chatStorage => Get.find<ChatStorageService>();
 
   final CryptoService _crypto = CryptoService();
+  final Esp32BleService _esp32Ble = Esp32BleService();
+  StreamSubscription<bool>? _esp32ConnectionSub;
+  StreamSubscription<Uint8List>? _esp32DataSub;
+  Future<void>? _esp32UserIdSyncTask;
+  bool _esp32UserIdSyncRequested = false;
+  String? _lastEsp32UserIdSnapshot;
   final Map<String, List<Map<String, dynamic>>> _pendingIncoming = {};
   final int _maxPendingPerSender = 20;
 
@@ -33,7 +44,8 @@ class MeshNetworkController extends GetxController {
   String get currentUserId => _currentUserId;
   String get publicKeyBase64 => _crypto.publicKeyBase64;
 
-  String get myFingerprint => QrContactData.fingerprintOf(_crypto.publicKeyBase64);
+  String get myFingerprint =>
+      QrContactData.fingerprintOf(_crypto.publicKeyBase64);
 
   static const String keyChangedError = 'KEY_CHANGED';
 
@@ -52,20 +64,23 @@ class MeshNetworkController extends GetxController {
   var batteryOptimizationDisabled = false.obs;
 
   var isEsp32Connected = false.obs;
+  var isEsp32Scanning = false.obs;
+  String? get esp32BleError => _esp32Ble.lastError;
+  String? esp32UserIdSyncError;
 
   var connectedEndpoints = <String, String>{}.obs; // endpointId -> user name
   var discoveredDevices = <String, String>{}.obs; // endpointId -> user name
   var blockedDevices = <String>[].obs; // blocked userIds
   var knownUsers = <String, String>{}.obs; // userId -> user name
-  var knownProfiles =
-      <String, Map<String, dynamic>>{}.obs; // userId -> name, avatar, image, publicKey, version
+  var knownProfiles = <String, Map<String, dynamic>>{}
+      .obs; // userId -> name, avatar, image, publicKey, version
 
   final StreamController<ChatMessage> _messageStreamController =
-  StreamController<ChatMessage>.broadcast();
+      StreamController<ChatMessage>.broadcast();
   Stream<ChatMessage> get messageStream => _messageStreamController.stream;
 
   final StreamController<SeenUpdate> _seenStreamController =
-  StreamController<SeenUpdate>.broadcast();
+      StreamController<SeenUpdate>.broadcast();
   Stream<SeenUpdate> get seenStream => _seenStreamController.stream;
 
   final Set<String> _processedMessageIds = {};
@@ -89,10 +104,6 @@ class MeshNetworkController extends GetxController {
   final int _maxProfileNameLength = 30;
   final int _maxProfileImageChars = 12000;
 
-  final bool _simulateLoraLoopback = true;
-  final int _simulatedLoraDelayMs = 1500;
-
-  int _messageCounter = 0;
   int? _sdkInt;
   Timer? _routeRefreshTimer;
 
@@ -122,6 +133,7 @@ class MeshNetworkController extends GetxController {
         imageByte: _ownImage,
         hasEsp32: isEsp32Connected.value,
       );
+      unawaited(_syncEsp32UserIds());
 
       await startMeshNode(_userName);
       _startRouteRefresh();
@@ -227,7 +239,7 @@ class MeshNetworkController extends GetxController {
         !needsNearbyWifi || await Permission.nearbyWifiDevices.isGranted;
 
     batteryOptimizationDisabled.value =
-    await Permission.ignoreBatteryOptimizations.isGranted;
+        await Permission.ignoreBatteryOptimizations.isGranted;
 
     return bluetoothScanGranted.value &&
         bluetoothAdvertiseGranted.value &&
@@ -309,7 +321,7 @@ class MeshNetworkController extends GetxController {
     final String remoteUserId = _endpointUserIds[endpointId] ?? '';
     final bool isInitiator =
         remoteUserId.isEmpty ||
-            _shortId(_currentUserId).compareTo(_shortId(remoteUserId)) < 0;
+        _shortId(_currentUserId).compareTo(_shortId(remoteUserId)) < 0;
 
     if (isInitiator) {
       _requestConnection(localUserName, endpointId);
@@ -333,9 +345,9 @@ class MeshNetworkController extends GetxController {
   }
 
   Future<void> _requestConnection(
-      String localUserName,
-      String endpointId,
-      ) async {
+    String localUserName,
+    String endpointId,
+  ) async {
     if (connectedEndpoints.containsKey(endpointId) ||
         _pendingEndpoints.contains(endpointId)) {
       return;
@@ -376,9 +388,9 @@ class MeshNetworkController extends GetxController {
   }
 
   Future<void> _onConnectionInitiated(
-      String endpointId,
-      ConnectionInfo info,
-      ) async {
+    String endpointId,
+    ConnectionInfo info,
+  ) async {
     final parsed = _parseEndpointName(info.endpointName);
     final String remoteUserId = parsed[0];
 
@@ -418,8 +430,8 @@ class MeshNetworkController extends GetxController {
       _retryCounts.remove(endpointId);
       connectedEndpoints[endpointId] =
           _endpointNames[endpointId] ??
-              discoveredDevices[endpointId] ??
-              endpointId;
+          discoveredDevices[endpointId] ??
+          endpointId;
       _sendHandshake(endpointId);
       update();
     } else {
@@ -496,9 +508,9 @@ class MeshNetworkController extends GetxController {
   }
 
   Future<void> _handleIncomingPayload(
-      String senderEndpointId,
-      Uint8List rawBytes,
-      ) async {
+    String senderEndpointId,
+    Uint8List rawBytes,
+  ) async {
     try {
       final String? endpointUserId = _endpointUserIds[senderEndpointId];
       if (endpointUserId != null && _isBlockedUser(endpointUserId)) return;
@@ -552,9 +564,11 @@ class MeshNetworkController extends GetxController {
 
       if (isForLoraModule && packet['gw'] == _currentUserId) {
         if (isEsp32Connected.value) {
-          sendToEsp32LoraGateway(jsonString);
+          await sendToEsp32LoraGateway(packet);
         } else {
-          _log("LoRa message dropped: I am the chosen gateway but ESP32 is not connected");
+          _log(
+            "LoRa message dropped: I am the chosen gateway but ESP32 is not connected",
+          );
         }
         return;
       }
@@ -699,14 +713,15 @@ class MeshNetworkController extends GetxController {
       1,
       hasEsp32: routingTable[userId]?.hasEsp32 ?? false,
     );
+    unawaited(_syncEsp32UserIds());
   }
 
   RouteEntry _newRoute(
-      String destId,
-      String nextHopId,
-      int hopCount, {
-        bool hasEsp32 = false,
-      }) {
+    String destId,
+    String nextHopId,
+    int hopCount, {
+    bool hasEsp32 = false,
+  }) {
     final Map<String, dynamic>? profile = knownProfiles[destId];
     return RouteEntry(
       destinationId: destId,
@@ -834,14 +849,14 @@ class MeshNetworkController extends GetxController {
 
     _chatStorage
         .saveContact(
-      peerId: userId,
-      name: cleanName,
-      avatar: cleanAvatar,
-      image: cleanImage,
-    )
+          peerId: userId,
+          name: cleanName,
+          avatar: cleanAvatar,
+          image: cleanImage,
+        )
         .catchError((Object e) {
-      _log("Could not save contact: $e");
-    });
+          _log("Could not save contact: $e");
+        });
 
     final Uint8List bytes = _profileBytes(
       userId: userId,
@@ -931,9 +946,9 @@ class MeshNetworkController extends GetxController {
   }
 
   void _processRoutingUpdate(
-      String senderEndpointId,
-      Map<String, dynamic> packet,
-      ) {
+    String senderEndpointId,
+    Map<String, dynamic> packet,
+  ) {
     final routes = packet['routes'];
     if (routes is! List) return;
 
@@ -962,7 +977,7 @@ class MeshNetworkController extends GetxController {
       } else if (existing.nextHopId == senderEndpointId) {
         shouldReplace =
             existing.hopCount != calculatedHops ||
-                existing.hasEsp32 != incomingGw;
+            existing.hasEsp32 != incomingGw;
       } else {
         shouldReplace = existing.hopCount > calculatedHops;
       }
@@ -986,9 +1001,9 @@ class MeshNetworkController extends GetxController {
     final List<String> staleDestinations = routingTable.entries
         .where(
           (e) =>
-      e.value.nextHopId == senderEndpointId &&
-          !advertisedDestinations.contains(e.key),
-    )
+              e.value.nextHopId == senderEndpointId &&
+              !advertisedDestinations.contains(e.key),
+        )
         .map((e) => e.key)
         .toList();
 
@@ -999,6 +1014,7 @@ class MeshNetworkController extends GetxController {
 
     if (isTableChanged) {
       _broadcastRoutingTable(exceptEndpointId: senderEndpointId);
+      unawaited(_syncEsp32UserIds());
       update();
     }
   }
@@ -1012,6 +1028,7 @@ class MeshNetworkController extends GetxController {
     for (final destId in destinations) {
       routingTable.remove(destId);
     }
+    if (destinations.isNotEmpty) unawaited(_syncEsp32UserIds());
     return destinations.isNotEmpty;
   }
 
@@ -1019,14 +1036,14 @@ class MeshNetworkController extends GetxController {
     _routeRefreshTimer?.cancel();
     _routeRefreshTimer = Timer.periodic(
       Duration(seconds: _routeRefreshSeconds),
-          (_) => _broadcastRoutingTable(),
+      (_) => _broadcastRoutingTable(),
     );
   }
 
   Future<void> _storeIncomingMessage(
-      Map<String, dynamic> packet,
-      String plainText,
-      ) async {
+    Map<String, dynamic> packet,
+    String plainText,
+  ) async {
     final ChatMessage message = ChatMessage(
       messageId: packet['messageId'] as String,
       senderId: packet['senderId'] as String,
@@ -1039,10 +1056,10 @@ class MeshNetworkController extends GetxController {
   }
 
   Future<void> _saveAndEmit(
-      String peerId,
-      ChatMessage message, {
-        required bool isIncoming,
-      }) async {
+    String peerId,
+    ChatMessage message, {
+    required bool isIncoming,
+  }) async {
     try {
       await _chatStorage.saveMessage(
         peerId: peerId,
@@ -1059,9 +1076,9 @@ class MeshNetworkController extends GetxController {
   }
 
   void relayMessageToMesh(
-      String originEndpointId,
-      Map<String, dynamic> packet,
-      ) {
+    String originEndpointId,
+    Map<String, dynamic> packet,
+  ) {
     final int ttl = packet['ttl'] is int ? packet['ttl'] as int : 0;
     if (ttl <= 1) return;
 
@@ -1126,6 +1143,13 @@ class MeshNetworkController extends GetxController {
     isEsp32Connected.value = value;
     _log("ESP32 connected: $value");
 
+    if (value) {
+      unawaited(_syncEsp32UserIds());
+    } else {
+      _lastEsp32UserIdSnapshot = null;
+      _esp32UserIdSyncRequested = false;
+    }
+
     final RouteEntry? self = routingTable[_currentUserId];
     if (self != null) {
       routingTable[_currentUserId] = RouteEntry(
@@ -1141,25 +1165,201 @@ class MeshNetworkController extends GetxController {
     update();
   }
 
-  bool sendToEsp32LoraGateway(String payloadString) {
-    if (!isEsp32Connected.value) return false;
-    _log("[LORA TX] ${payloadString.length} bytes handed to ESP32");
+  /// Scan for ESP32 boards advertising the configured custom BLE service.
+  Future<List<ScanResult>> scanEsp32Devices() async {
+    if (isEsp32Scanning.value) return const [];
+    isEsp32Scanning.value = true;
+    update();
+    try {
+      return await _esp32Ble.scanForDevices();
+    } catch (error) {
+      _log('ESP32 scan failed: $error');
+      return const [];
+    } finally {
+      isEsp32Scanning.value = false;
+      update();
+    }
+  }
 
-    if (_simulateLoraLoopback) {
-      Future.delayed(Duration(milliseconds: _simulatedLoraDelayMs), () {
-        if (isClosed) return;
-        try {
-          final decoded = jsonDecode(payloadString);
-          if (decoded is Map<String, dynamic>) {
-            handleLoraReceived(decoded);
+  /// Connect the selected ESP32 and mark this phone as a LoRa gateway.
+  Future<bool> connectEsp32(BluetoothDevice device) async {
+    final connected = await _esp32Ble.connect(device);
+    if (!connected) return false;
+    setEsp32Connected(true);
+    esp32UserIdSyncError = null;
+    await _syncEsp32UserIds();
+    return true;
+  }
+
+  /// Send the latest full route ID snapshot once, and serialize overlapping updates.
+  Future<void> _syncEsp32UserIds() {
+    if (!isEsp32Connected.value) return Future<void>.value();
+    _esp32UserIdSyncRequested = true;
+    final activeTask = _esp32UserIdSyncTask;
+    if (activeTask != null) return activeTask;
+
+    final completer = Completer<void>();
+    _esp32UserIdSyncTask = completer.future;
+    () async {
+      try {
+        while (_esp32UserIdSyncRequested && isEsp32Connected.value) {
+          _esp32UserIdSyncRequested = false;
+          final userIds = routingTable.keys.toList()..sort();
+          final snapshot = userIds.join('\n');
+          if (snapshot == _lastEsp32UserIdSnapshot) continue;
+
+          if (!await _esp32Ble.sendUserIds(userIds)) {
+            esp32UserIdSyncError = _esp32Ble.lastError;
+            _log('ESP32 user ID sync failed: $esp32UserIdSyncError');
+            break;
           }
-        } catch (e) {
-          _log("Simulated LoRa RX failed: $e");
+          _lastEsp32UserIdSnapshot = snapshot;
+          esp32UserIdSyncError = null;
+          _log('Sent ${userIds.length} routing user IDs to ESP32');
         }
-      });
+      } finally {
+        _esp32UserIdSyncTask = null;
+        completer.complete();
+      }
+    }();
+    return completer.future;
+  }
+
+  /// Disconnect from the ESP32 and remove this phone's gateway advertisement.
+  Future<void> disconnectEsp32() async {
+    await _esp32Ble.disconnect();
+    setEsp32Connected(false);
+  }
+
+  /// Send packet to ESP32 via BLE (as binary)
+  /// This encodes the packet to binary format at the gateway
+  Future<bool> sendToEsp32LoraGateway(Map<String, dynamic> packet) async {
+    if (!isEsp32Connected.value) {
+      _log("[LORA TX] ESP32 not connected");
+      return false;
     }
 
-    return true;
+    try {
+      // Encode packet to binary using LoRaCodec
+      final Uint8List loraBytes = LoRaCodec.encode(packet);
+      _log("[LORA TX] Sending ${loraBytes.length} bytes to ESP32");
+
+      return await _esp32Ble.sendData(loraBytes);
+    } catch (e) {
+      _log("[LORA TX] Encode error: $e");
+      return false;
+    }
+  }
+
+  /// Handle binary LoRa data received from ESP32 via BLE
+  void handleLoraBytes(Uint8List bytes) {
+    if (!isEsp32Connected.value) return;
+
+    _log("[LORA RX] Received ${bytes.length} bytes from ESP32");
+
+    // Decode binary packet
+    final LoRaPacket? loraPacket = LoRaCodec.decode(bytes);
+    if (loraPacket == null) {
+      _log("[LORA RX] Failed to decode packet");
+      return;
+    }
+
+    // Expand IDs from prefixes
+    final String? fullTargetId = _expandTargetId(loraPacket.targetIdPrefix);
+    if (fullTargetId == null) {
+      _log("[LORA RX] Unknown target prefix: ${loraPacket.targetIdPrefix}");
+      return;
+    }
+
+    final String? fullSenderId = _expandSenderId(loraPacket.senderIdPrefix);
+    if (fullSenderId == null) {
+      _log(
+        "[LORA RX] Unknown sender prefix: ${loraPacket.senderIdPrefix}, dropped",
+      );
+      return;
+    }
+
+    // Check for duplicates
+    if (!_rememberMessageId('lora_${loraPacket.messageId}')) {
+      _log("[LORA RX] Duplicate ignored");
+      return;
+    }
+
+    if (_isBlockedUser(fullSenderId)) return;
+
+    _log(
+      "[LORA RX] Message for ${_shortId(fullTargetId)} from ${_shortId(fullSenderId)}",
+    );
+
+    // Convert back to base64 for _deliverToMe
+    final String bodyBase64 = base64Encode(loraPacket.encryptedBody);
+
+    // Create packet map
+    final Map<String, dynamic> packet = {
+      'type': 'MSG',
+      'messageId': loraPacket.messageId,
+      'senderId': fullSenderId,
+      'targetId': fullTargetId,
+      'body': bodyBase64,
+      'isLora': false,
+      'ttl': _defaultTtl,
+      'hopCount': 0,
+      'viaLora': true,
+    };
+
+    if (fullTargetId == _currentUserId) {
+      // For me - decrypt and store
+      _deliverToMe(packet).catchError((Object e) {
+        _log("LoRa delivery failed: $e");
+      });
+      return;
+    }
+
+    // Not for me - forward to mesh if target is in routing table
+    if (!routingTable.containsKey(fullTargetId)) {
+      _log("[LORA RX] Target ${_shortId(fullTargetId)} not in mesh, dropped");
+      return;
+    }
+
+    _forwardPacket(packet);
+  }
+
+  /// Expand target ID from 8-byte prefix by matching routing table
+  String? _expandTargetId(String prefix) {
+    if (prefix.isEmpty) return null;
+
+    // Check if it's me
+    if (_currentUserId.startsWith(prefix)) {
+      return _currentUserId;
+    }
+
+    // Search routing table
+    for (final id in routingTable.keys) {
+      if (id.startsWith(prefix)) {
+        return id;
+      }
+    }
+
+    return null; // Not found - packet will be dropped
+  }
+
+  /// Expand sender ID from 8-byte prefix by matching known profiles
+  String? _expandSenderId(String prefix) {
+    if (prefix.isEmpty) return null;
+
+    // Check if it's me
+    if (_currentUserId.startsWith(prefix)) {
+      return _currentUserId;
+    }
+
+    // Search known profiles
+    for (final id in knownProfiles.keys) {
+      if (id.startsWith(prefix)) {
+        return id;
+      }
+    }
+
+    return null; // Not found - message won't decrypt
   }
 
   void handleLoraReceived(Map<String, dynamic> packet) {
@@ -1224,12 +1424,12 @@ class MeshNetworkController extends GetxController {
   }
 
   Future<bool> broadcastMessage(
-      String targetUserId,
-      String messageBody,
-      bool isLora,
-      ) async {
+    String targetUserId,
+    String messageBody,
+    bool isLora,
+  ) async {
     final String? peerPublicKey =
-    knownProfiles[targetUserId]?['publicKey'] as String?;
+        knownProfiles[targetUserId]?['publicKey'] as String?;
     if (peerPublicKey == null || peerPublicKey.isEmpty) {
       _log(
         "SEND FAIL: no public key for $targetUserId, known profiles: ${knownProfiles.keys.toList()}",
@@ -1239,8 +1439,7 @@ class MeshNetworkController extends GetxController {
 
     final RouteEntry? gateway = bestGateway();
     final bool hasRoute = routingTable.containsKey(targetUserId);
-    final bool useLora =
-        isLora || (!hasRoute && gateway != null);
+    final bool useLora = isLora || (!hasRoute && gateway != null);
 
     if (useLora && gateway == null) {
       _log("SEND FAIL: no LoRa gateway reachable");
@@ -1279,18 +1478,23 @@ class MeshNetworkController extends GetxController {
 
     int sentCount;
     if (useLora && gateway!.nextHopId == 'SELF') {
-      sentCount = sendToEsp32LoraGateway(jsonEncode(packet)) ? 1 : 0;
+      // I am the gateway - encode and send via LoRa
+      final bool sent = await sendToEsp32LoraGateway(packet);
+      sentCount = sent ? 1 : 0;
     } else {
+      // Send via mesh
       sentCount = _forwardPacket(packet);
     }
 
     if (sentCount == 0) {
-      _log("SEND FAIL: nothing was sent (payload too large or no endpoint)");
+      _log("SEND FAIL: nothing was sent");
       return false;
     }
 
     if (useLora) {
-      _log("Message queued for LoRa via gateway ${_shortId(gateway!.destinationId)}");
+      _log(
+        "Message queued for LoRa via gateway ${_shortId(gateway!.destinationId)}",
+      );
     }
 
     await _saveAndEmit(
@@ -1308,8 +1512,8 @@ class MeshNetworkController extends GetxController {
   }
 
   String _generateMessageId() {
-    _messageCounter++;
-    return "${_shortId(_currentUserId)}_${DateTime.now().microsecondsSinceEpoch}_$_messageCounter";
+    // Use LoRa codec's random 8-byte generator for all messages
+    return LoRaCodec.generateMessageId();
   }
 
   bool _rememberMessageId(String messageId) {
@@ -1340,9 +1544,9 @@ class MeshNetworkController extends GetxController {
     final List<String> endpointsOfUser = _endpointUserIds.entries
         .where(
           (e) =>
-      _sameUser(e.value, userId) &&
-          connectedEndpoints.containsKey(e.key),
-    )
+              _sameUser(e.value, userId) &&
+              connectedEndpoints.containsKey(e.key),
+        )
         .map((e) => e.key)
         .toList();
 
@@ -1390,8 +1594,8 @@ class MeshNetworkController extends GetxController {
 
     final bool isNewBluetooth =
         permission == Permission.bluetoothScan ||
-            permission == Permission.bluetoothAdvertise ||
-            permission == Permission.bluetoothConnect;
+        permission == Permission.bluetoothAdvertise ||
+        permission == Permission.bluetoothConnect;
     final bool isNearbyWifi = permission == Permission.nearbyWifiDevices;
 
     if ((isNewBluetooth && sdk < 31) || (isNearbyWifi && sdk < 33)) {
@@ -1434,7 +1638,7 @@ class MeshNetworkController extends GetxController {
           title: Text("Battery Optimization"),
           content: Text(
             "For continuous mesh networking, please disable battery optimization. "
-                "This keeps HopTalk running in the background to relay messages.",
+            "This keeps HopTalk running in the background to relay messages.",
           ),
           actions: [
             TextButton(onPressed: () => Get.back(), child: Text("Cancel")),
@@ -1459,9 +1663,8 @@ class MeshNetworkController extends GetxController {
     list.sort((a, b) {
       final int byHops = a.hopCount.compareTo(b.hopCount);
       if (byHops != 0) return byHops;
-      return displayNameOf(
-        a.destinationId,
-      ).compareTo(displayNameOf(b.destinationId));
+      return displayNameOf(a.destinationId)
+          .compareTo(displayNameOf(b.destinationId));
     });
 
     return list;
@@ -1527,7 +1730,10 @@ class MeshNetworkController extends GetxController {
     return null;
   }
 
-  Future<String?> saveQrContact(QrContactData data, {bool replaceKey = false}) async {
+  Future<String?> saveQrContact(
+    QrContactData data, {
+    bool replaceKey = false,
+  }) async {
     final String pinnedKey = _chatStorage.pinnedKeyOf(data.userId);
     if (pinnedKey.isNotEmpty && pinnedKey != data.publicKey && !replaceKey) {
       return keyChangedError;
@@ -1537,7 +1743,9 @@ class MeshNetworkController extends GetxController {
     if (existing != null) {
       final String existingKey = (existing['publicKey'] as String?) ?? '';
       final bool isUnpinned = pinnedKey.isEmpty;
-      if (isUnpinned && existingKey.isNotEmpty && existingKey != data.publicKey) {
+      if (isUnpinned &&
+          existingKey.isNotEmpty &&
+          existingKey != data.publicKey) {
         knownProfiles[data.userId] = {
           'name': data.name,
           'avatar': data.avatar,
@@ -1595,20 +1803,25 @@ class MeshNetworkController extends GetxController {
       final String name = (conv['peerName'] as String?) ?? '';
       final String avatar = (conv['avatar'] as String?) ?? '';
 
-      knownProfiles.putIfAbsent(peerId, () => {
-        'name': name,
-        'avatar': avatar,
-        'image': '',
-        'publicKey': publicKey,
-        'version': 0,
-        'local': true,
-      });
+      knownProfiles.putIfAbsent(
+        peerId,
+        () => {
+          'name': name,
+          'avatar': avatar,
+          'image': '',
+          'publicKey': publicKey,
+          'version': 0,
+          'local': true,
+        },
+      );
       knownUsers[peerId] = name;
     }
   }
 
   @override
   void onInit() {
+    _esp32ConnectionSub = _esp32Ble.connectionStream.listen(setEsp32Connected);
+    _esp32DataSub = _esp32Ble.dataStream.listen(handleLoraBytes);
     _loadSavedContacts();
     checkPermissions();
     super.onInit();
@@ -1622,6 +1835,9 @@ class MeshNetworkController extends GetxController {
     _resetState(notify: false);
     _messageStreamController.close();
     _seenStreamController.close();
+    _esp32ConnectionSub?.cancel();
+    _esp32DataSub?.cancel();
+    _esp32Ble.dispose();
     super.onClose();
   }
 

@@ -26,6 +26,10 @@
 		<string>$(FLUTTER_BUILD_NUMBER)</string>
 		<key>LSRequiresIPhoneOS</key>
 		<true/>
+		<key>NSBluetoothAlwaysUsageDescription</key>
+		<string>Hop Talk uses Bluetooth to connect to an ESP32 LoRa gateway for offline messaging.</string>
+		<key>NSBluetoothPeripheralUsageDescription</key>
+		<string>Hop Talk uses Bluetooth to connect to an ESP32 LoRa gateway for offline messaging.</string>
 		<key>UIApplicationSceneManifest</key>
 		<dict>
 			<key>UIApplicationSupportsMultipleScenes</key>
