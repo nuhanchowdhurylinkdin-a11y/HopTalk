@@ -215,6 +215,27 @@ class Esp32BleService {
     return true;
   }
 
+  /// Add or remove one 16-character user ID prefix from the ESP32 route list.
+  /// Wire layout: operation byte (0xA1 add, 0xA2 remove) + ID prefix bytes.
+  Future<bool> sendUserIdDelta(String idPrefix, {required bool add}) async {
+    lastError = null;
+    if (_rxCharacteristic == null) {
+      lastError = 'ESP32 RX characteristic is not connected';
+      return false;
+    }
+    if (!RegExp(r'^[0-9a-fA-F]{16}$').hasMatch(idPrefix)) {
+      lastError = 'Route ID prefix must be exactly 16 hexadecimal characters';
+      return false;
+    }
+
+    final List<int> bytes = [add ? 0xA1 : 0xA2, ...utf8.encode(idPrefix)];
+    if (bytes.length > mtuNow - 3) {
+      lastError = 'Route ID update exceeds the BLE write size';
+      return false;
+    }
+    return sendData(Uint8List.fromList(bytes));
+  }
+
   /// Turn off notifications and disconnect the active ESP32.
   Future<void> disconnect() async {
     final device = _device;

@@ -29,9 +29,10 @@ class MeshNetworkController extends GetxController {
   final Esp32BleService _esp32Ble = Esp32BleService();
   StreamSubscription<bool>? _esp32ConnectionSub;
   StreamSubscription<Uint8List>? _esp32DataSub;
-  Future<void>? _esp32UserIdSyncTask;
-  bool _esp32UserIdSyncRequested = false;
-  String? _lastEsp32UserIdSnapshot;
+  Future<void>? _esp32InitialUserIdSyncTask;
+  Future<void>? _esp32UserIdDeltaTask;
+  final List<(String, bool)> _pendingEsp32UserIdDeltas = [];
+  bool _esp32InitialUserIdSyncComplete = false;
   final Map<String, List<Map<String, dynamic>>> _pendingIncoming = {};
   final int _maxPendingPerSender = 20;
 
@@ -133,7 +134,7 @@ class MeshNetworkController extends GetxController {
         imageByte: _ownImage,
         hasEsp32: isEsp32Connected.value,
       );
-      unawaited(_syncEsp32UserIds());
+      unawaited(_sendInitialEsp32UserIds());
 
       await startMeshNode(_userName);
       _startRouteRefresh();
@@ -707,13 +708,14 @@ class MeshNetworkController extends GetxController {
   }
 
   void _addDirectNeighbor(String endpointId, String userId) {
+    final bool isNewUser = !routingTable.containsKey(userId);
     routingTable[userId] = _newRoute(
       userId,
       endpointId,
       1,
       hasEsp32: routingTable[userId]?.hasEsp32 ?? false,
     );
-    unawaited(_syncEsp32UserIds());
+    if (isNewUser) _queueEsp32UserIdDelta(userId, add: true);
   }
 
   RouteEntry _newRoute(
@@ -953,6 +955,8 @@ class MeshNetworkController extends GetxController {
     if (routes is! List) return;
 
     bool isTableChanged = false;
+    final Set<String> addedUserIds = {};
+    final Set<String> removedUserIds = {};
     final Set<String> advertisedDestinations = {};
 
     for (final route in routes) {
@@ -983,6 +987,7 @@ class MeshNetworkController extends GetxController {
       }
 
       if (shouldReplace) {
+        if (existing == null) addedUserIds.add(destId);
         if (existing == null || existing.hasEsp32 != incomingGw) {
           _log(
             "Route ${_shortId(destId)} gateway=$incomingGw hops=$calculatedHops",
@@ -1009,12 +1014,18 @@ class MeshNetworkController extends GetxController {
 
     for (final destId in staleDestinations) {
       routingTable.remove(destId);
+      removedUserIds.add(destId);
       isTableChanged = true;
     }
 
     if (isTableChanged) {
       _broadcastRoutingTable(exceptEndpointId: senderEndpointId);
-      unawaited(_syncEsp32UserIds());
+      for (final userId in addedUserIds) {
+        _queueEsp32UserIdDelta(userId, add: true);
+      }
+      for (final userId in removedUserIds) {
+        _queueEsp32UserIdDelta(userId, add: false);
+      }
       update();
     }
   }
@@ -1027,8 +1038,8 @@ class MeshNetworkController extends GetxController {
 
     for (final destId in destinations) {
       routingTable.remove(destId);
+      _queueEsp32UserIdDelta(destId, add: false);
     }
-    if (destinations.isNotEmpty) unawaited(_syncEsp32UserIds());
     return destinations.isNotEmpty;
   }
 
@@ -1144,10 +1155,10 @@ class MeshNetworkController extends GetxController {
     _log("ESP32 connected: $value");
 
     if (value) {
-      unawaited(_syncEsp32UserIds());
+      unawaited(_sendInitialEsp32UserIds());
     } else {
-      _lastEsp32UserIdSnapshot = null;
-      _esp32UserIdSyncRequested = false;
+      _esp32InitialUserIdSyncComplete = false;
+      _pendingEsp32UserIdDeltas.clear();
     }
 
     final RouteEntry? self = routingTable[_currentUserId];
@@ -1187,42 +1198,115 @@ class MeshNetworkController extends GetxController {
     if (!connected) return false;
     setEsp32Connected(true);
     esp32UserIdSyncError = null;
-    await _syncEsp32UserIds();
+    await _sendInitialEsp32UserIds();
     return true;
   }
 
-  /// Send the latest full route ID snapshot once, and serialize overlapping updates.
-  Future<void> _syncEsp32UserIds() {
+  /// Send one full prefix list when ESP32 connects, then send only route deltas.
+  Future<void> _sendInitialEsp32UserIds() {
     if (!isEsp32Connected.value) return Future<void>.value();
-    _esp32UserIdSyncRequested = true;
-    final activeTask = _esp32UserIdSyncTask;
+    final activeTask = _esp32InitialUserIdSyncTask;
     if (activeTask != null) return activeTask;
 
     final completer = Completer<void>();
-    _esp32UserIdSyncTask = completer.future;
+    _esp32InitialUserIdSyncTask = completer.future;
     () async {
       try {
-        while (_esp32UserIdSyncRequested && isEsp32Connected.value) {
-          _esp32UserIdSyncRequested = false;
-          final userIds = routingTable.keys.toList()..sort();
-          final snapshot = userIds.join('\n');
-          if (snapshot == _lastEsp32UserIdSnapshot) continue;
-
-          if (!await _esp32Ble.sendUserIds(userIds)) {
-            esp32UserIdSyncError = _esp32Ble.lastError;
-            _log('ESP32 user ID sync failed: $esp32UserIdSyncError');
-            break;
+        _esp32InitialUserIdSyncComplete = false;
+        final Map<String, String> fullIdByPrefix = {};
+        for (final fullId in routingTable.keys) {
+          final prefix = _loraIdPrefix(fullId);
+          final otherId = fullIdByPrefix[prefix];
+          if (otherId != null && otherId != fullId) {
+            esp32UserIdSyncError = 'Two routing IDs share prefix $prefix';
+            _log('Cannot sync ambiguous user ID prefix: $prefix');
+            return;
           }
-          _lastEsp32UserIdSnapshot = snapshot;
-          esp32UserIdSyncError = null;
-          _log('Sent ${userIds.length} routing user IDs to ESP32');
+          fullIdByPrefix[prefix] = fullId;
         }
+        final prefixes = fullIdByPrefix.keys.toList()..sort();
+        if (!await _esp32Ble.sendUserIds(prefixes)) {
+          esp32UserIdSyncError = _esp32Ble.lastError;
+          _log('ESP32 initial user ID sync failed: $esp32UserIdSyncError');
+          return;
+        }
+
+        esp32UserIdSyncError = null;
+        _esp32InitialUserIdSyncComplete = true;
+        _log('Sent initial list of ${prefixes.length} user ID prefixes');
+        await _drainEsp32UserIdDeltas();
       } finally {
-        _esp32UserIdSyncTask = null;
+        _esp32InitialUserIdSyncTask = null;
         completer.complete();
       }
     }();
     return completer.future;
+  }
+
+  /// Queue a single user add/remove while the initial snapshot or another delta is sending.
+  void _queueEsp32UserIdDelta(String fullId, {required bool add}) {
+    if (!isEsp32Connected.value) return;
+    final String prefix;
+    try {
+      prefix = _loraIdPrefix(fullId);
+      final bool samePrefixStillPresent = routingTable.keys.any(
+        (otherId) => otherId != fullId && _loraIdPrefix(otherId) == prefix,
+      );
+      if (add && samePrefixStillPresent) {
+        esp32UserIdSyncError = 'Two routing IDs share prefix $prefix';
+        _log('Cannot add ambiguous user ID prefix: $prefix');
+        return;
+      }
+      // If another full ID still maps to this prefix, retain the ESP32 entry.
+      if (!add && samePrefixStillPresent) return;
+    } on FormatException catch (error) {
+      esp32UserIdSyncError = error.message;
+      _log('Cannot sync route ID: ${error.message}');
+      return;
+    }
+
+    _pendingEsp32UserIdDeltas.add((prefix, add));
+    if (_esp32InitialUserIdSyncComplete) {
+      unawaited(_drainEsp32UserIdDeltas());
+    }
+  }
+
+  /// Serialize queued add/remove writes so rapid mesh changes stay in order.
+  Future<void> _drainEsp32UserIdDeltas() {
+    if (!isEsp32Connected.value || !_esp32InitialUserIdSyncComplete) {
+      return Future<void>.value();
+    }
+    final activeTask = _esp32UserIdDeltaTask;
+    if (activeTask != null) return activeTask;
+
+    final completer = Completer<void>();
+    _esp32UserIdDeltaTask = completer.future;
+    () async {
+      try {
+        while (_pendingEsp32UserIdDeltas.isNotEmpty && isEsp32Connected.value) {
+          final (prefix, add) = _pendingEsp32UserIdDeltas.first;
+          if (!await _esp32Ble.sendUserIdDelta(prefix, add: add)) {
+            esp32UserIdSyncError = _esp32Ble.lastError;
+            _log('ESP32 user ID delta failed: $esp32UserIdSyncError');
+            break;
+          }
+          _pendingEsp32UserIdDeltas.removeAt(0);
+          esp32UserIdSyncError = null;
+          _log('${add ? 'Added' : 'Removed'} user ID prefix $prefix on ESP32');
+        }
+      } finally {
+        _esp32UserIdDeltaTask = null;
+        completer.complete();
+      }
+    }();
+    return completer.future;
+  }
+
+  String _loraIdPrefix(String fullId) {
+    if (fullId.length < 16 || !RegExp(r'^[0-9a-fA-F]+$').hasMatch(fullId)) {
+      throw FormatException('Invalid mesh user ID: $fullId');
+    }
+    return fullId.substring(0, 16).toLowerCase();
   }
 
   /// Disconnect from the ESP32 and remove this phone's gateway advertisement.
