@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:hop_talk/core/utils/constants/colors.dart';
 import 'package:hop_talk/features/home/views/widgets/build_profile_image.dart';
+import 'package:hop_talk/features/mesh_network/controller/mesh_network_controller.dart';
 import '../../controller/scanner_controller.dart';
 import '../widgets/radar_wave_painter.dart';
 
