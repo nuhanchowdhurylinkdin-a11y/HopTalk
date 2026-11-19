@@ -13,10 +13,7 @@ import '../widgets/conversation_tile.dart';
 
 class HomeScreen extends GetView<HomeController> {
   HomeScreen({super.key}) {
-    Get.put(
-      MeshNetworkController(),
-      permanent: true,
-    );
+    Get.put(MeshNetworkController(), permanent: true);
   }
 
   @override
@@ -45,12 +42,13 @@ class HomeScreen extends GetView<HomeController> {
                 final connected = controller.getConnectedDevicesCount();
 
                 return GestureDetector(
-                  onTap: () => Get.toNamed(AppRoutes.nearbyDevicesScreen, arguments: isActive),
+                  onTap: () => Get.toNamed(
+                    AppRoutes.nearbyDevicesScreen,
+                    arguments: isActive,
+                  ),
                   child: MeshStatus(
                     dotColor: isActive ? const Color(0xFF0053DB) : Colors.red,
-                    text: isActive
-                        ? "C: $connected"
-                        : "Mesh Inactive",
+                    text: isActive ? "C: $connected" : "Mesh Inactive",
                   ),
                 );
               }),
@@ -77,6 +75,11 @@ class HomeScreen extends GetView<HomeController> {
             }),
           ],
           bottom: const TabBar(
+            labelColor: AppColors.neutral,
+            unselectedLabelColor: Color(0xFF767964),
+            indicatorColor: AppColors.primary,
+            indicatorSize: TabBarIndicatorSize.label,
+            indicatorWeight: 3,
             tabs: [
               Tab(text: "Chats"),
               Tab(text: "LoRa"),
@@ -149,7 +152,8 @@ class _ChatsTab extends StatelessWidget {
               Expanded(
                 child: ListView.separated(
                   itemCount: conversations.length,
-                  separatorBuilder: (context, index) => const Divider(height: 1),
+                  separatorBuilder: (context, index) =>
+                      const Divider(height: 1),
                   itemBuilder: (context, index) => ConversationTile(
                     conversation: conversations[index],
                     mesh: mesh,

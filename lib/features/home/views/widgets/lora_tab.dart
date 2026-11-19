@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:get/get.dart';
 import 'package:hop_talk/core/utils/constants/colors.dart';
+import 'package:hop_talk/core/utils/helpers/screen_utils.dart';
 import 'package:hop_talk/features/chat/service/chat_storage_service.dart';
 import 'package:hop_talk/features/chat/views/screens/chat_screen.dart';
 import 'package:hop_talk/features/home/views/widgets/build_profile_image.dart';
@@ -21,15 +22,31 @@ class LoraTab extends StatelessWidget {
           final List<Map<String, dynamic>> qrContacts = storage.getQrContacts();
           final bool esp32Connected = mesh.isEsp32Connected.value;
           final bool hasGateway = mesh.bestGateway() != null;
+          final screen = ScreenUtils.of(context);
 
           return ListView(
-            padding: const EdgeInsets.all(16),
+            padding: EdgeInsets.all(screen.horizontalPadding),
             children: [
-              _buildEsp32Card(mesh, esp32Connected),
-              const SizedBox(height: 16),
-              _buildGatewaysSection(mesh),
-              const SizedBox(height: 16),
-              _buildQrContactsSection(mesh, storage, qrContacts, hasGateway),
+              Center(
+                child: ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 640),
+                  child: Column(
+                    children: [
+                      _buildEsp32Card(mesh, esp32Connected, screen),
+                      SizedBox(height: screen.sectionGap * 0.7),
+                      _buildGatewaysSection(mesh, screen),
+                      SizedBox(height: screen.sectionGap * 0.7),
+                      _buildQrContactsSection(
+                        mesh,
+                        storage,
+                        qrContacts,
+                        hasGateway,
+                        screen,
+                      ),
+                    ],
+                  ),
+                ),
+              ),
             ],
           );
         });
@@ -37,10 +54,17 @@ class LoraTab extends StatelessWidget {
     );
   }
 
-  Widget _buildEsp32Card(MeshNetworkController mesh, bool connected) {
+  Widget _buildEsp32Card(
+    MeshNetworkController mesh,
+    bool connected,
+    ScreenUtils screen,
+  ) {
     return Card(
+      color: AppColors.primarySurface,
+      surfaceTintColor: Colors.transparent,
+      elevation: 0,
       child: Padding(
-        padding: const EdgeInsets.all(16),
+        padding: EdgeInsets.all(screen.isSmallPhone ? 12 : 16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -48,13 +72,15 @@ class LoraTab extends StatelessWidget {
               children: [
                 Icon(
                   connected ? Icons.check_circle : Icons.cancel,
-                  color: connected ? Colors.green : Colors.grey,
+                  color: connected
+                      ? AppColors.secondary
+                      : const Color(0xFF767964),
                 ),
                 const SizedBox(width: 8),
                 Text(
                   connected ? "ESP32 Connected" : "ESP32 Not Connected",
-                  style: const TextStyle(
-                    fontSize: 16,
+                  style: TextStyle(
+                    fontSize: screen.isSmallPhone ? 15 : 16,
                     fontWeight: FontWeight.bold,
                   ),
                 ),
@@ -66,6 +92,10 @@ class LoraTab extends StatelessWidget {
                 onPressed: mesh.disconnectEsp32,
                 icon: const Icon(Icons.bluetooth_disabled),
                 label: const Text('Disconnect'),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppColors.secondary,
+                  side: const BorderSide(color: AppColors.secondary),
+                ),
               )
             else
               Obx(
@@ -84,6 +114,11 @@ class LoraTab extends StatelessWidget {
                     mesh.isEsp32Scanning.value
                         ? 'Scanning…'
                         : 'Scan and connect',
+                  ),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppColors.primary,
+                    foregroundColor: AppColors.neutral,
+                    disabledBackgroundColor: AppColors.background,
                   ),
                 ),
               ),
@@ -106,6 +141,8 @@ class LoraTab extends StatelessWidget {
 
     final ScanResult? selected = await Get.dialog<ScanResult>(
       AlertDialog(
+        backgroundColor: AppColors.background,
+        surfaceTintColor: Colors.transparent,
         title: const Text('Choose ESP32'),
         content: SizedBox(
           width: double.maxFinite,
@@ -114,7 +151,10 @@ class LoraTab extends StatelessWidget {
             children: devices
                 .map(
                   (result) => ListTile(
-                    leading: const Icon(Icons.developer_board),
+                    leading: const Icon(
+                      Icons.developer_board,
+                      color: AppColors.secondary,
+                    ),
                     title: Text(
                       result.device.platformName.isEmpty
                           ? 'ESP32 (${result.device.remoteId.str})'
@@ -127,7 +167,13 @@ class LoraTab extends StatelessWidget {
                 .toList(),
           ),
         ),
-        actions: [TextButton(onPressed: Get.back, child: const Text('Cancel'))],
+        actions: [
+          TextButton(
+            onPressed: Get.back,
+            style: TextButton.styleFrom(foregroundColor: AppColors.secondary),
+            child: const Text('Cancel'),
+          ),
+        ],
       ),
     );
     if (selected == null) return;
@@ -148,19 +194,25 @@ class LoraTab extends StatelessWidget {
     }
   }
 
-  Widget _buildGatewaysSection(MeshNetworkController mesh) {
+  Widget _buildGatewaysSection(MeshNetworkController mesh, ScreenUtils screen) {
     final List<dynamic> gateways = mesh.gateways;
     final dynamic bestGw = mesh.bestGateway();
 
     return Card(
+      color: AppColors.primarySurface,
+      surfaceTintColor: Colors.transparent,
+      elevation: 0,
       child: Padding(
-        padding: const EdgeInsets.all(16),
+        padding: EdgeInsets.all(screen.isSmallPhone ? 12 : 16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
+            Text(
               "Gateways in mesh",
-              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+              style: TextStyle(
+                fontSize: screen.isSmallPhone ? 15 : 16,
+                fontWeight: FontWeight.bold,
+              ),
             ),
             const SizedBox(height: 12),
             if (gateways.isEmpty)
@@ -190,7 +242,9 @@ class LoraTab extends StatelessWidget {
                           Icon(
                             Icons.cell_tower,
                             size: 20,
-                            color: isBest ? Colors.green : Colors.grey,
+                            color: isBest
+                                ? AppColors.secondary
+                                : const Color(0xFF767964),
                           ),
                           const SizedBox(width: 8),
                           Expanded(child: Text("$name$hopInfo")),
@@ -201,7 +255,7 @@ class LoraTab extends StatelessWidget {
                                 vertical: 2,
                               ),
                               decoration: BoxDecoration(
-                                color: Colors.green,
+                                color: AppColors.secondary,
                                 borderRadius: BorderRadius.circular(12),
                               ),
                               child: const Text(
@@ -229,30 +283,51 @@ class LoraTab extends StatelessWidget {
     ChatStorageService storage,
     List<Map<String, dynamic>> qrContacts,
     bool hasGateway,
+    ScreenUtils screen,
   ) {
     return Card(
+      color: AppColors.primarySurface,
+      surfaceTintColor: Colors.transparent,
+      elevation: 0,
       child: Padding(
-        padding: const EdgeInsets.all(16),
+        padding: EdgeInsets.all(screen.isSmallPhone ? 12 : 16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                const Text(
-                  "QR contacts",
-                  style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
-                ),
-                ElevatedButton.icon(
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final title = Text(
+                  'QR contacts',
+                  style: TextStyle(
+                    fontSize: screen.isSmallPhone ? 15 : 16,
+                    fontWeight: FontWeight.bold,
+                  ),
+                );
+                final action = ElevatedButton.icon(
                   onPressed: () => Get.to(() => const QrScreen()),
                   icon: const Icon(Icons.qr_code_scanner, size: 18),
-                  label: const Text("Show / scan QR"),
+                  label: const Text('Show / scan QR'),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: AppColors.primary,
                     foregroundColor: AppColors.neutral,
+                    padding: EdgeInsets.symmetric(
+                      horizontal: screen.isSmallPhone ? 10 : 14,
+                    ),
                   ),
-                ),
-              ],
+                );
+
+                if (constraints.maxWidth < 340) {
+                  return Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [title, const SizedBox(height: 8), action],
+                  );
+                }
+
+                return Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  children: [title, action],
+                );
+              },
             ),
             const SizedBox(height: 12),
             if (qrContacts.isEmpty)
@@ -317,10 +392,10 @@ class LoraTab extends StatelessWidget {
                                   style: TextStyle(
                                     fontSize: 12,
                                     color: isInMesh
-                                        ? Colors.green
+                                        ? AppColors.secondary
                                         : hasGateway
-                                        ? Colors.orange
-                                        : Colors.grey,
+                                        ? AppColors.tertiary
+                                        : const Color(0xFF767964),
                                   ),
                                 ),
                               ],
@@ -329,7 +404,7 @@ class LoraTab extends StatelessWidget {
                           IconButton(
                             icon: const Icon(
                               Icons.chat,
-                              color: AppColors.primary,
+                              color: AppColors.secondary,
                             ),
                             onPressed: () => Get.to(
                               () => ChatScreen(
@@ -341,7 +416,10 @@ class LoraTab extends StatelessWidget {
                             ),
                           ),
                           IconButton(
-                            icon: const Icon(Icons.delete, color: Colors.red),
+                            icon: const Icon(
+                              Icons.delete,
+                              color: Color(0xFFB42318),
+                            ),
                             onPressed: () =>
                                 _confirmDelete(storage, mesh, peerId, name),
                           ),
@@ -364,6 +442,8 @@ class LoraTab extends StatelessWidget {
   ) async {
     final bool? confirmed = await Get.dialog<bool>(
       AlertDialog(
+        backgroundColor: AppColors.background,
+        surfaceTintColor: Colors.transparent,
         title: const Text("Delete Contact"),
         content: Text(
           "Are you sure you want to delete $name? The chat history will also be deleted.",
@@ -371,11 +451,14 @@ class LoraTab extends StatelessWidget {
         actions: [
           TextButton(
             onPressed: () => Get.back(result: false),
+            style: TextButton.styleFrom(foregroundColor: AppColors.secondary),
             child: const Text("Cancel"),
           ),
           TextButton(
             onPressed: () => Get.back(result: true),
-            style: TextButton.styleFrom(foregroundColor: Colors.red),
+            style: TextButton.styleFrom(
+              foregroundColor: const Color(0xFFB42318),
+            ),
             child: const Text("Delete"),
           ),
         ],

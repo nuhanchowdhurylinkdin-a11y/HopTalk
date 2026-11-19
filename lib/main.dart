@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:hive_flutter/hive_flutter.dart';
 import 'package:hop_talk/core/services/storage_service.dart';
+import 'package:hop_talk/core/utils/constants/colors.dart';
 import 'package:hop_talk/features/setup/models/user_profile.dart';
 import 'package:hop_talk/routes/app_routes.dart';
 import 'package:hop_talk/core/utils/bindings/controller_binder.dart';
@@ -68,7 +69,15 @@ class MyApp extends StatelessWidget {
       title: 'HopTalk',
       debugShowCheckedModeBanner: false,
       theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(seedColor: Colors.deepPurple),
+        colorScheme:
+            ColorScheme.fromSeed(
+              seedColor: AppColors.primary,
+              brightness: Brightness.light,
+            ).copyWith(
+              primary: AppColors.primary,
+              secondary: AppColors.secondary,
+              surface: AppColors.background,
+            ),
         fontFamily: 'Inter',
       ),
       initialRoute: initialRoute,
