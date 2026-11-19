@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 
 import 'package:flutter_svg/flutter_svg.dart';
 import 'package:hop_talk/core/utils/constants/icon_path.dart';
+import 'package:hop_talk/core/utils/helpers/screen_utils.dart';
 
 class OnboardChip extends StatelessWidget {
   const OnboardChip({
@@ -15,7 +16,7 @@ class OnboardChip extends StatelessWidget {
     this.height = 48.0,
     this.isIcon = false,
     this.icon,
-    this.borderRadius = 10
+    this.borderRadius = 10,
   });
 
   final String title;
@@ -29,6 +30,8 @@ class OnboardChip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final screen = ScreenUtils.of(context);
+
     return Container(
       height: height,
       padding: const EdgeInsets.symmetric(horizontal: 10),
@@ -56,7 +59,7 @@ class OnboardChip extends StatelessWidget {
               overflow: TextOverflow.ellipsis,
               maxLines: 1,
               style: TextStyle(
-                fontSize: 12,
+                fontSize: screen.isSmallPhone ? 11 : 12,
                 fontWeight: FontWeight.w600,
                 color: textColor,
               ),
