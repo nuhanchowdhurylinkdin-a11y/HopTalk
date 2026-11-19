@@ -13,25 +13,35 @@ class BuildProfileImage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (profile != null && profile!.compressedImage.isNotEmpty) {
-      return Image.memory(
-        base64Decode(profile!.compressedImage),
-        width: 40,
-        height: 40,
-        fit: BoxFit.cover,
-        errorBuilder: (context, error, stackTrace) {
-          return const Icon(Icons.person, size: 32, color: Colors.grey);
-        },
+    if (profile == null) {
+      return const Icon(Icons.person, size: 32, color: Colors.grey);
+    }
+
+    if (profile!.compressedImage.isNotEmpty) {
+      return ClipOval(
+        child: Image.memory(
+          base64Decode(profile!.compressedImage),
+          width: 40,
+          height: 40,
+          fit: BoxFit.cover,
+          errorBuilder: (context, error, stackTrace) {
+            return const Icon(Icons.person, size: 32, color: Colors.grey);
+          },
+        ),
       );
     }
-    else if (profile!.avatar.isNotEmpty) {
-      return SvgPicture.asset(
-        profile!.avatar,
-        width: 40,
-        height: 40,
-        fit: BoxFit.cover,
+
+    if (profile!.avatar.isNotEmpty) {
+      return ClipOval(
+        child: SvgPicture.asset(
+          profile!.avatar,
+          width: 40,
+          height: 40,
+          fit: BoxFit.cover,
+        ),
       );
     }
+
     return const Icon(Icons.person, size: 32, color: Colors.grey);
   }
 }
