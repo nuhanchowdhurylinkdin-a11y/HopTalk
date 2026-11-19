@@ -1,12 +1,16 @@
 import 'package:flutter/material.dart';
+import 'package:hop_talk/core/utils/constants/colors.dart';
 
 class MeshStatus extends StatelessWidget {
-  const MeshStatus({super.key,
+  const MeshStatus({
+    super.key,
     this.dotColor = Colors.blue,
-    required this.text
+    this.backgroundColor = AppColors.backgroundSecondary,
+    required this.text,
   });
 
   final Color dotColor;
+  final Color backgroundColor;
   final String text;
 
   @override
@@ -15,7 +19,7 @@ class MeshStatus extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
       height: 24,
       decoration: BoxDecoration(
-        color: Color(0xFFF0EDEF),
+        color: backgroundColor,
         borderRadius: BorderRadius.circular(200),
       ),
 
@@ -26,21 +30,15 @@ class MeshStatus extends StatelessWidget {
           Container(
             height: 7,
             width: 7,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: dotColor,
-            ),
+            decoration: BoxDecoration(shape: BoxShape.circle, color: dotColor),
           ),
 
-          SizedBox(width: 5,),
+          SizedBox(width: 5),
 
           Text(
             text,
-            style: TextStyle(
-              fontSize: 13,
-              fontWeight: FontWeight.w500,
-            ),
-          )
+            style: TextStyle(fontSize: 13, fontWeight: FontWeight.w500),
+          ),
         ],
       ),
     );

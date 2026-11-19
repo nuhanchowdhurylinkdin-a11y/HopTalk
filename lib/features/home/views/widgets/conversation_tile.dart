@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:hop_talk/core/utils/constants/colors.dart';
+import 'package:hop_talk/core/utils/helpers/screen_utils.dart';
 import 'package:hop_talk/features/chat/views/screens/chat_screen.dart';
 import 'package:hop_talk/features/home/views/widgets/build_profile_image.dart';
 import 'package:hop_talk/features/mesh_network/controller/mesh_network_controller.dart';
@@ -40,6 +41,7 @@ class ConversationTile extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final screen = ScreenUtils.of(context);
     final String peerId = conversation['peerId'] as String;
     final String savedName = (conversation['peerName'] as String?) ?? '';
     final String name = savedName.isNotEmpty
@@ -66,9 +68,14 @@ class ConversationTile extends StatelessWidget {
       final String status = viaLora
           ? "Via LoRa"
           : !isOnline
-              ? "Offline"
-              : (route.hopCount == 1 ? "Connected" : "${route.hopCount} hops away");
-      subtitle = Text(status, style: const TextStyle(color: Colors.black54));
+          ? "Offline"
+          : (route.hopCount == 1 ? "Connected" : "${route.hopCount} hops away");
+      subtitle = Text(
+        status,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: const TextStyle(color: Color(0xFF767964)),
+      );
     } else {
       subtitle = Row(
         children: [
@@ -76,7 +83,7 @@ class ConversationTile extends StatelessWidget {
             Icon(
               lastSeen ? Icons.done_all : Icons.done,
               size: 16,
-              color: lastSeen ? const Color(0xFF0053DB) : Colors.black45,
+              color: lastSeen ? AppColors.tertiary : Colors.black45,
             ),
             const SizedBox(width: 4),
           ],
@@ -93,11 +100,17 @@ class ConversationTile extends StatelessWidget {
     }
 
     return ListTile(
+      contentPadding: EdgeInsets.symmetric(
+        horizontal: screen.horizontalPadding,
+        vertical: screen.isSmallPhone ? 2 : 6,
+      ),
+      minVerticalPadding: screen.isSmallPhone ? 2 : 4,
+      horizontalTitleGap: screen.isSmallPhone ? 10 : 16,
       leading: Stack(
         clipBehavior: Clip.none,
         children: [
           CircleAvatar(
-            radius: 24,
+            radius: screen.isSmallPhone ? 20 : 24,
             backgroundColor: Colors.transparent,
             child: ClipOval(
               child: BuildProfileImage(
@@ -119,8 +132,8 @@ class ConversationTile extends StatelessWidget {
               height: 12,
               decoration: BoxDecoration(
                 color: viaLora
-                    ? Colors.orange
-                    : (isOnline ? Colors.green : Colors.grey),
+                    ? AppColors.tertiary
+                    : (isOnline ? AppColors.secondary : Colors.grey),
                 shape: BoxShape.circle,
                 border: Border.all(color: Colors.white, width: 2),
               ),
@@ -134,6 +147,7 @@ class ConversationTile extends StatelessWidget {
         overflow: TextOverflow.ellipsis,
         style: TextStyle(
           fontWeight: unread > 0 ? FontWeight.bold : FontWeight.w500,
+          fontSize: screen.isSmallPhone ? 14 : 16,
         ),
       ),
       subtitle: subtitle,
@@ -145,22 +159,27 @@ class ConversationTile extends StatelessWidget {
             Text(
               _formatTime(lastTimestamp),
               style: TextStyle(
-                fontSize: 12,
+                fontSize: screen.isSmallPhone ? 10 : 12,
                 color: unread > 0 ? AppColors.tertiary : Colors.black45,
               ),
             ),
           if (unread > 0) ...[
             const SizedBox(height: 4),
             Container(
+              constraints: const BoxConstraints(minWidth: 20, minHeight: 20),
               padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
               decoration: BoxDecoration(
                 color: AppColors.primary,
-                // borderRadius: BorderRadius.circular(10),
-                shape: BoxShape.circle
+                borderRadius: BorderRadius.circular(10),
               ),
               child: Text(
                 unread > 99 ? "99+" : "$unread",
-                style: TextStyle(color: AppColors.neutral, fontWeight: FontWeight.bold, fontSize: 12),
+                textAlign: TextAlign.center,
+                style: TextStyle(
+                  color: AppColors.neutral,
+                  fontWeight: FontWeight.bold,
+                  fontSize: screen.isSmallPhone ? 10 : 12,
+                ),
               ),
             ),
           ],

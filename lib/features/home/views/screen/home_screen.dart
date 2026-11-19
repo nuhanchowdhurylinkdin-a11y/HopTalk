@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:hop_talk/core/utils/constants/colors.dart';
+import 'package:hop_talk/core/utils/helpers/screen_utils.dart';
 import 'package:hop_talk/features/home/controller/home_controller.dart';
 import 'package:hop_talk/features/home/views/widgets/build_profile_image.dart';
 import 'package:hop_talk/features/home/views/widgets/lora_tab.dart';
@@ -18,6 +19,8 @@ class HomeScreen extends GetView<HomeController> {
 
   @override
   Widget build(BuildContext context) {
+    final screen = ScreenUtils.of(context);
+
     return DefaultTabController(
       length: 2,
       child: Scaffold(
@@ -25,11 +28,18 @@ class HomeScreen extends GetView<HomeController> {
         appBar: AppBar(
           title: Row(
             children: [
-              const Text(
-                "HopTalk",
-                style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold),
+              Flexible(
+                child: Text(
+                  'HopTalk',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: screen.isSmallPhone ? 17 : 18,
+                    fontWeight: FontWeight.bold,
+                  ),
+                ),
               ),
-              const SizedBox(width: 12),
+              SizedBox(width: screen.isSmallPhone ? 6 : 12),
               Obx(() {
                 final meshController = controller.meshController;
                 if (meshController == null) {
@@ -40,6 +50,13 @@ class HomeScreen extends GetView<HomeController> {
                     meshController.isAdvertising.value ||
                     meshController.isDiscovering.value;
                 final connected = controller.getConnectedDevicesCount();
+                final statusText = screen.isSmallPhone
+                    ? isActive
+                          ? '$connected'
+                          : 'Offline'
+                    : isActive
+                    ? 'C: $connected'
+                    : 'Mesh Inactive';
 
                 return GestureDetector(
                   onTap: () => Get.toNamed(
@@ -47,8 +64,13 @@ class HomeScreen extends GetView<HomeController> {
                     arguments: isActive,
                   ),
                   child: MeshStatus(
-                    dotColor: isActive ? const Color(0xFF0053DB) : Colors.red,
-                    text: isActive ? "C: $connected" : "Mesh Inactive",
+                    dotColor: isActive
+                        ? AppColors.secondary
+                        : const Color(0xFF767964),
+                    backgroundColor: isActive
+                        ? AppColors.primarySurface
+                        : AppColors.backgroundSecondary,
+                    text: statusText,
                   ),
                 );
               }),
@@ -57,17 +79,22 @@ class HomeScreen extends GetView<HomeController> {
           actions: [
             IconButton(
               icon: const Icon(Icons.qr_code_scanner),
+              tooltip: 'Exchange QR contact',
+              color: AppColors.secondary,
               onPressed: () => Get.to(() => const QrScreen()),
             ),
             Obx(() {
               return GestureDetector(
                 onTap: () => Get.toNamed(AppRoutes.meScreen),
-                child: CircleAvatar(
-                  radius: 40,
-                  backgroundColor: Colors.transparent,
-                  child: ClipOval(
-                    child: BuildProfileImage(
-                      profile: controller.userProfileData.value,
+                child: Padding(
+                  padding: const EdgeInsets.only(right: 10),
+                  child: CircleAvatar(
+                    radius: screen.isSmallPhone ? 18 : 20,
+                    backgroundColor: AppColors.primarySurface,
+                    child: ClipOval(
+                      child: BuildProfileImage(
+                        profile: controller.userProfileData.value,
+                      ),
                     ),
                   ),
                 ),
@@ -110,13 +137,23 @@ class _ChatsTab extends StatelessWidget {
           final conversations = controller.conversations;
 
           if (conversations.isEmpty) {
-            return const Center(
-              child: Text("No chats yet. Nearby people will appear here."),
+            return Center(
+              child: Padding(
+                padding: EdgeInsets.symmetric(
+                  horizontal: ScreenUtils.of(context).horizontalPadding,
+                ),
+                child: const Text(
+                  'No chats yet. Nearby people will appear here.',
+                  textAlign: TextAlign.center,
+                ),
+              ),
             );
           }
 
+          final screen = ScreenUtils.of(context);
+
           return Column(
-            mainAxisSize: MainAxisSize.min,
+            mainAxisSize: MainAxisSize.max,
             children: [
               Obx(() {
                 final meshController = controller.meshController;
@@ -130,11 +167,11 @@ class _ChatsTab extends StatelessWidget {
                 final discovered = controller.getDiscoveredDevicesCount();
 
                 return Container(
-                  height: 32,
+                  constraints: const BoxConstraints(minHeight: 32),
                   padding: const EdgeInsets.symmetric(horizontal: 12),
                   width: double.maxFinite,
                   decoration: BoxDecoration(
-                    color: const Color(0xFFF6F3F5),
+                    color: AppColors.primarySurface,
                     borderRadius: BorderRadius.circular(12),
                   ),
                   alignment: Alignment.centerLeft,
@@ -142,21 +179,26 @@ class _ChatsTab extends StatelessWidget {
                     isActive
                         ? "Mesh. $discovered Nearby Gateway"
                         : "No Device Found",
-                    style: const TextStyle(
-                      fontSize: 14,
+                    style: TextStyle(
+                      fontSize: screen.isSmallPhone ? 12 : 14,
                       fontWeight: FontWeight.bold,
                     ),
                   ),
-                ).paddingSymmetric(horizontal: 16);
+                ).paddingSymmetric(horizontal: screen.horizontalPadding);
               }),
               Expanded(
-                child: ListView.separated(
-                  itemCount: conversations.length,
-                  separatorBuilder: (context, index) =>
-                      const Divider(height: 1),
-                  itemBuilder: (context, index) => ConversationTile(
-                    conversation: conversations[index],
-                    mesh: mesh,
+                child: Center(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 640),
+                    child: ListView.separated(
+                      itemCount: conversations.length,
+                      separatorBuilder: (context, index) =>
+                          const Divider(height: 1),
+                      itemBuilder: (context, index) => ConversationTile(
+                        conversation: conversations[index],
+                        mesh: mesh,
+                      ),
+                    ),
                   ),
                 ),
               ),
