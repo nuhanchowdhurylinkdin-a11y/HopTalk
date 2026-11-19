@@ -10,6 +10,7 @@ import 'package:get/get.dart';
 import 'package:hop_talk/features/chat/models/chat_message.dart';
 import 'package:hop_talk/features/chat/service/chat_storage_service.dart';
 import 'package:hop_talk/features/home/controller/home_controller.dart';
+import 'package:hop_talk/features/setup/models/user_profile.dart';
 import 'package:hop_talk/features/mesh_network/service/crypto_service.dart';
 import 'package:location/location.dart' as loc;
 import 'package:nearby_connections/nearby_connections.dart';
@@ -44,9 +45,9 @@ class MeshNetworkController extends GetxController {
   final int _maxPendingPerSender = 20;
 
   late final _currentUserId = _homeController.userProfileData.value!.userId;
-  late final _userName = _homeController.userProfileData.value?.name ?? 'User';
-  late final _avatar = _homeController.userProfileData.value?.avatar ?? '';
-  late final _compressedProfile =
+  late String _userName = _homeController.userProfileData.value?.name ?? 'User';
+  late String _avatar = _homeController.userProfileData.value?.avatar ?? '';
+  late String _compressedProfile =
       _homeController.userProfileData.value?.compressedImage ?? '';
 
   String get currentUserId => _currentUserId;
@@ -151,6 +152,49 @@ class MeshNetworkController extends GetxController {
         "Bluetooth, Location & Nearby permissions are required for offline mesh.",
       );
     }
+  }
+
+  Future<void> updateLocalProfile(UserProfile profile) async {
+    _userName = profile.name;
+    _avatar = profile.avatar;
+    _compressedProfile = profile.compressedImage;
+    _profileVersion = DateTime.now().millisecondsSinceEpoch;
+    _ownImage = await _buildMeshThumbnail(_compressedProfile);
+
+    final RouteEntry? self = routingTable[_currentUserId];
+    if (self != null) {
+      routingTable[_currentUserId] = RouteEntry(
+        destinationId: _currentUserId,
+        nextHopId: 'SELF',
+        hopCount: 0,
+        avatar: _sanitizeAvatar(_avatar),
+        imageByte: _ownImage,
+        hasEsp32: self.hasEsp32,
+      );
+      _broadcastRoutingTable();
+
+      final Uint8List profileBytes = _profileBytes(
+        userId: _currentUserId,
+        name: _userName,
+        avatar: _sanitizeAvatar(_avatar),
+        image: _ownImage,
+        publicKey: _crypto.publicKeyBase64,
+        version: _profileVersion,
+      );
+      for (final endpointId in connectedEndpoints.keys.toList()) {
+        _sendBytes(endpointId, profileBytes);
+      }
+    }
+
+    if (isAdvertising.value) {
+      await Nearby().stopAdvertising();
+      await startAdvertising(_userName);
+    }
+    if (isDiscovering.value) {
+      await Nearby().stopDiscovery();
+      await startDiscovery(_userName);
+    }
+    update();
   }
 
   @override
