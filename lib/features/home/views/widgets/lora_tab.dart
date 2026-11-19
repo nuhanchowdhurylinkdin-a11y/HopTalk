@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter_blue_plus/flutter_blue_plus.dart';
 import 'package:get/get.dart';
 import 'package:hop_talk/core/utils/constants/colors.dart';
+import 'package:hop_talk/core/utils/helpers/app_helpers.dart';
 import 'package:hop_talk/core/utils/helpers/screen_utils.dart';
 import 'package:hop_talk/features/chat/service/chat_storage_service.dart';
 import 'package:hop_talk/features/chat/views/screens/chat_screen.dart';
@@ -131,10 +132,9 @@ class LoraTab extends StatelessWidget {
   Future<void> _scanAndConnect(MeshNetworkController mesh) async {
     final List<ScanResult> devices = await mesh.scanEsp32Devices();
     if (devices.isEmpty) {
-      Get.snackbar(
-        'ESP32 not found',
-        'Check that the board is powered on and advertising the configured service UUID.',
-        snackPosition: SnackPosition.BOTTOM,
+      AppHelpers.showErrorSnackbar(
+        title: 'ESP32 not found',
+        message: 'Check that the board is powered on and advertising the configured service UUID.',
       );
       return;
     }
@@ -180,16 +180,21 @@ class LoraTab extends StatelessWidget {
 
     final connected = await mesh.connectEsp32(selected.device);
     if (!connected) {
-      Get.snackbar(
-        'Connection failed',
-        mesh.esp32BleError ?? 'ESP32 BLE connection failed. Check device logs.',
-        snackPosition: SnackPosition.BOTTOM,
+      AppHelpers.showErrorSnackbar(
+        title: 'Connection failed',
+        message:
+            mesh.esp32BleError ??
+            'ESP32 BLE connection failed. Check device logs.',
       );
     } else if (mesh.esp32UserIdSyncError != null) {
-      Get.snackbar(
-        'ESP32 connected; ID sync failed',
-        mesh.esp32UserIdSyncError!,
-        snackPosition: SnackPosition.BOTTOM,
+      AppHelpers.showErrorSnackbar(
+        title: 'ESP32 connected; ID sync failed',
+        message: mesh.esp32UserIdSyncError!,
+      );
+    } else {
+      AppHelpers.showSuccessSnackbar(
+        title: 'ESP32 connected',
+        message: 'Your LoRa gateway is ready to use.',
       );
     }
   }
