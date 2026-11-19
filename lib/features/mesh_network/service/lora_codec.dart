@@ -1,7 +1,9 @@
 import 'dart:convert';
 import 'dart:math';
 import 'dart:typed_data';
+
 import 'package:flutter/foundation.dart';
+
 import '../models/lora_packet.dart';
 
 /// Service for encoding/decoding LoRa binary packets
@@ -30,7 +32,9 @@ class LoRaCodec {
       // Check size limit
       final int totalSize = loraHeaderBytes + bodyBytes.length;
       if (totalSize > maxLoraPayloadBytes) {
-        throw Exception('Packet too large: $totalSize bytes (max $maxLoraPayloadBytes)');
+        throw Exception(
+          'Packet too large: $totalSize bytes (max $maxLoraPayloadBytes)',
+        );
       }
 
       // Create buffer
@@ -38,11 +42,16 @@ class LoRaCodec {
       int offset = 0;
 
       // Byte 0: Packet type
-      buffer.setUint8(offset++, LoRaPacket.typeMessage);
+      final int packetType = packet['type'] == 'SEEN'
+          ? LoRaPacket.typeSeen
+          : LoRaPacket.typeMessage;
+      buffer.setUint8(offset++, packetType);
 
       // Bytes 1-8: Message ID (8 bytes from 16 hex chars)
       if (messageId.length != 16) {
-        throw Exception('Invalid messageId length: ${messageId.length}, expected 16');
+        throw Exception(
+          'Invalid messageId length: ${messageId.length}, expected 16',
+        );
       }
       for (int i = 0; i < 16; i += 2) {
         final int byte = int.parse(messageId.substring(i, i + 2), radix: 16);
@@ -62,7 +71,9 @@ class LoRaCodec {
       }
 
       if (kDebugMode) {
-        debugPrint('[LoRaCodec] Encoded: header=$loraHeaderBytes + body=${bodyBytes.length} = $totalSize bytes');
+        debugPrint(
+          '[LoRaCodec] Encoded: header=$loraHeaderBytes + body=${bodyBytes.length} = $totalSize bytes',
+        );
       }
 
       return buffer.buffer.asUint8List();
@@ -91,7 +102,8 @@ class LoRaCodec {
 
       // Byte 0: Packet type
       final int packetType = buffer.getUint8(offset++);
-      if (packetType != LoRaPacket.typeMessage) {
+      if (packetType != LoRaPacket.typeMessage &&
+          packetType != LoRaPacket.typeSeen) {
         if (kDebugMode) {
           debugPrint('[LoRaCodec] Unknown packet type: $packetType');
         }
@@ -125,7 +137,9 @@ class LoRaCodec {
       final Uint8List bodyBytes = bytes.sublist(offset);
 
       if (kDebugMode) {
-        debugPrint('[LoRaCodec] Decoded: msgId=$messageId, sender=$senderPrefix*, target=$targetPrefix*, body=${bodyBytes.length}b');
+        debugPrint(
+          '[LoRaCodec] Decoded: msgId=$messageId, sender=$senderPrefix*, target=$targetPrefix*, body=${bodyBytes.length}b',
+        );
       }
 
       return LoRaPacket(
@@ -145,16 +159,17 @@ class LoRaCodec {
 
   static void _writeIdPrefix(ByteData buffer, String id, int offset) {
     if (id.length < 16 || !RegExp(r'^[0-9a-fA-F]+$').hasMatch(id)) {
-      throw FormatException('User ID must contain at least 16 hexadecimal characters');
+      throw FormatException(
+        'User ID must contain at least 16 hexadecimal characters',
+      );
     }
     for (int i = 0; i < 16; i += 2) {
       buffer.setUint8(offset++, int.parse(id.substring(i, i + 2), radix: 16));
     }
   }
 
-  static String _bytesToHex(List<int> bytes) => bytes
-      .map((byte) => byte.toRadixString(16).padLeft(2, '0'))
-      .join();
+  static String _bytesToHex(List<int> bytes) =>
+      bytes.map((byte) => byte.toRadixString(16).padLeft(2, '0')).join();
 
   /// Generate random 8-byte message ID (16 hex chars)
   static String generateMessageId() {

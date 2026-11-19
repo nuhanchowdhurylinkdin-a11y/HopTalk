@@ -127,18 +127,27 @@ extension MeshMessaging on MeshNetworkController {
     }
   }
 
-  Future<bool> sendSeenReceipt(String peerId, List<String> messageIds) async {
-    if (messageIds.isEmpty || connectedEndpoints.isEmpty) return false;
+    Future<bool> sendSeenReceipt(String peerId, List<String> messageIds) async {
+    if (messageIds.isEmpty) return false;
 
     final String? peerKey = knownProfiles[peerId]?['publicKey'] as String?;
     if (peerKey == null || peerKey.isEmpty) return false;
 
+    final bool inMesh =
+        routingTable.containsKey(peerId) && connectedEndpoints.isNotEmpty;
+    final RouteEntry? gateway = bestGateway();
+    final bool useLora = !inMesh && gateway != null;
+    if (!inMesh && !useLora) return false;
+
+    final List<String> ids = useLora
+        ? (messageIds.length > 5
+              ? messageIds.sublist(messageIds.length - 5)
+              : messageIds)
+        : messageIds.take(100).toList();
+
     String encrypted;
     try {
-      encrypted = await _crypto.encrypt(
-        jsonEncode(messageIds.take(100).toList()),
-        peerKey,
-      );
+      encrypted = await _crypto.encrypt(jsonEncode(ids), peerKey);
     } catch (e) {
       _log("Receipt encryption failed: $e");
       return false;
@@ -149,7 +158,7 @@ extension MeshMessaging on MeshNetworkController {
 
     final Map<String, dynamic> packet = {
       "type": "SEEN",
-      "isLora": false,
+      "isLora": useLora,
       "messageId": receiptId,
       "senderId": _currentUserId,
       "targetId": peerId,
@@ -158,6 +167,12 @@ extension MeshMessaging on MeshNetworkController {
       "ttl": _defaultTtl,
     };
 
+    if (useLora) {
+      packet["gw"] = gateway!.destinationId;
+      if (gateway.nextHopId == 'SELF') {
+        return await sendToEsp32LoraGateway(packet);
+      }
+    }
     return _forwardPacket(packet) > 0;
   }
 

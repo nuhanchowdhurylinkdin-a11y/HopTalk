@@ -238,9 +238,11 @@ extension MeshEsp32 on MeshNetworkController {
     // Convert back to base64 for _deliverToMe
     final String bodyBase64 = base64Encode(loraPacket.encryptedBody);
 
+    final bool isSeenReceipt = loraPacket.packetType == LoRaPacket.typeSeen;
+
     // Create packet map
     final Map<String, dynamic> packet = {
-      'type': 'MSG',
+      'type': isSeenReceipt ? 'SEEN' : 'MSG',
       'messageId': loraPacket.messageId,
       'senderId': fullSenderId,
       'targetId': fullTargetId,
@@ -252,8 +254,10 @@ extension MeshEsp32 on MeshNetworkController {
     };
 
     if (fullTargetId == _currentUserId) {
-      // For me - decrypt and store
-      _deliverToMe(packet).catchError((Object e) {
+      final Future<void> task = isSeenReceipt
+          ? _deliverSeen(packet)
+          : _deliverToMe(packet);
+      task.catchError((Object e) {
         _log("LoRa delivery failed: $e");
       });
       return;

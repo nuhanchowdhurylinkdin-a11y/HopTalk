@@ -20,6 +20,7 @@ class LoRaPacket {
 
   /// Packet type constants
   static const int typeMessage = 0x01;
+  static const int typeSeen = 0x02;
 
   /// Header size in bytes
   static const int headerSize = 25;
