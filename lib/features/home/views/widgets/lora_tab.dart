@@ -8,6 +8,7 @@ import 'package:hop_talk/features/chat/service/chat_storage_service.dart';
 import 'package:hop_talk/features/chat/views/screens/chat_screen.dart';
 import 'package:hop_talk/features/home/views/widgets/build_profile_image.dart';
 import 'package:hop_talk/features/mesh_network/controller/mesh_network_controller.dart';
+import 'package:hop_talk/routes/app_routes.dart';
 import 'package:hop_talk/features/qr/views/qr_screen.dart';
 import 'package:hop_talk/features/setup/models/user_profile.dart';
 
@@ -35,6 +36,8 @@ class LoraTab extends StatelessWidget {
                     children: [
                       _buildEsp32Card(mesh, esp32Connected, screen),
                       SizedBox(height: screen.sectionGap * 0.7),
+                      _buildFirmwareCard(screen),
+                      SizedBox(height: screen.sectionGap * 0.7),
                       _buildGatewaysSection(mesh, screen),
                       SizedBox(height: screen.sectionGap * 0.7),
                       _buildQrContactsSection(
@@ -52,6 +55,44 @@ class LoraTab extends StatelessWidget {
           );
         });
       },
+    );
+  }
+
+  Widget _buildFirmwareCard(ScreenUtils screen) {
+    return Card(
+      color: AppColors.primarySurface,
+      surfaceTintColor: Colors.transparent,
+      elevation: 0,
+      child: Padding(
+        padding: EdgeInsets.all(screen.isSmallPhone ? 12 : 16),
+        child: Row(
+          children: [
+            const Icon(Icons.system_update_alt, color: AppColors.secondary),
+            const SizedBox(width: 12),
+            const Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'ESP32 Firmware',
+                    style: TextStyle(fontWeight: FontWeight.bold),
+                  ),
+                  SizedBox(height: 4),
+                  Text('Update firmware over USB OTG.'),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            OutlinedButton(
+              onPressed: () => Get.toNamed(AppRoutes.flashFirmwareScreen),
+              style: OutlinedButton.styleFrom(
+                foregroundColor: const Color(0xFF202124),
+              ),
+              child: const Text('Flash'),
+            ),
+          ],
+        ),
+      ),
     );
   }
 

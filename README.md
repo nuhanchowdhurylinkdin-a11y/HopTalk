@@ -5,6 +5,7 @@ HopTalk is an Android-first, offline messaging app. Nearby phones find each othe
 ## Contents
 
 - [For app users](#for-app-users)
+- [Flash ESP32 firmware](#flash-esp32-firmware)
 - [How HopTalk works](#how-hoptalk-works)
 - [ESP32 and LoRa integration](#esp32-and-lora-integration)
 - [Limits and known limitations](#limits-and-known-limitations)
@@ -50,6 +51,21 @@ When you message a contact who is not reachable through the phone mesh, and a ga
 
 The firmware project is maintained separately in the [HopTalk ESP32 repository](https://github.com/nuhanchowdhurylinkdin-a11y/HopTalk-esp32). Its README contains wiring, radio setup, build instructions, and the BLE protocol. The firmware and app must agree on packet format and BLE UUIDs.
 
+### Flash ESP32 firmware
+
+The app includes a merged firmware image at `assets/firmware/firmware_merged.bin`. It is built for a classic ESP32 with 4 MiB flash, DIO mode, and a 40 MHz flash clock. The flasher writes from offset `0x0`; do not use this image for a different board or partition layout without updating and checking the image and flasher settings.
+
+1. Connect the ESP32 to an Android phone using a USB OTG adapter and a data-capable cable. The board does not need to be connected over BLE first.
+2. In the app's **LoRa** tab, open **ESP32 Firmware** and tap **Flash**.
+3. Grant Android USB permission when prompted. If the board does not enter download mode automatically, hold **BOOT**, press **EN/RESET**, then release **BOOT** when syncing starts.
+4. Keep the board connected and powered until the app reports **Verified**. The app checks the written flash range with MD5 before reporting success.
+
+The bundled image is 4 MiB on disk, but its trailing `0xFF` padding is trimmed. The app rounds the write length up to a 4 KiB flash sector, so the default write is about 1.29 MiB. Flash areas beyond that range are left untouched.
+
+**Erase all flash before writing** is optional and off by default. Turn it on only if you want to clear all 4 MiB first; this removes existing firmware, NVS settings, and stored data, then writes the bundled image. The erase pass takes longer. If USB disconnects or power is lost during flashing, reconnect the board and run the flash again.
+
+The flasher starts at 115200 baud and attempts 460800 after syncing. It returns to 115200 and retries the reset/sync sequence if fast-mode commands time out. Progress and errors appear in the app and in the Flutter debug console with the `[EspFlasher]` prefix.
+
 ### What to expect
 
 - Nearby messaging uses local phone-to-phone connections and does not need internet access.
@@ -74,6 +90,9 @@ flowchart LR
     C --> BLE["ESP32 BLE service"]
     BLE --> Codec["LoRa packet codec"]
     Codec --> Radio["ESP32 and LoRa radio"]
+    FlashUI["Firmware flashing screen"] --> FlashService["ESP32 ROM flasher"]
+    FlashService --> USB["Android USB OTG serial"]
+    USB --> Firmware["Bundled merged firmware"]
 ```
 
 #### Main folders
@@ -88,10 +107,11 @@ flowchart LR
 | `lib/features/chat/` | Chat UI/controller, paged message history, seen receipts, and encrypted local chat storage. |
 | `lib/features/qr/` | Creating/scanning contact QR codes and confirming a peer's public key fingerprint. |
 | `lib/features/mesh_network/controller/` | `MeshNetworkController` plus part files: `permissions_extension.dart`, `connections_extension.dart`, `messaging_extension.dart`, `routing_extension.dart`, `contacts_extension.dart`, `esp32_extension.dart`. |
-| `lib/features/mesh_network/service/` | `crypto_service.dart` (X25519/AES-GCM), `esp32_ble_service.dart` (BLE transport to the ESP32), `lora_codec.dart` (binary LoRa frames). |
+| `lib/features/mesh_network/service/` | `crypto_service.dart` (X25519/AES-GCM), `esp32_ble_service.dart` (BLE transport to the ESP32), `lora_codec.dart` (binary LoRa frames), `esp_flasher.dart` (USB serial ROM flasher and image trimming). |
+| `lib/features/mesh_network/views/screens/flash_firmware_screen.dart` | Firmware flashing UI, progress, erase option, verification result, and error logs. |
 | `lib/features/mesh_network/models/` | `RouteEntry`, `QrContactData`, and `LoRaPacket` data types. |
 | `lib/features/permission/` | Permission-related feature files; check `lib/routes/app_routes.dart` for the active permission screen route. |
-| `assets/` | Onboarding art, avatars, app images, and font. |
+| `assets/` | Onboarding art, avatars, app images, font, and `firmware/firmware_merged.bin` for the supported classic ESP32 board. |
 | `android/`, `ios/`, `macos/`, `linux/`, `windows/` | Flutter platform runner projects. Nearby Connections mesh currently targets Android. |
 
 ### Identity and contacts
@@ -364,7 +384,13 @@ flutter devices
 flutter run -d <android-device-id>
 ```
 
-In debug builds, log lines are printed with the prefixes `[Mesh]`, `[ESP32 BLE]`, and `[LoRaCodec]`. They are disabled in release builds.
+To build a release APK for Android:
+
+```sh
+flutter build apk --release
+```
+
+In debug builds, log lines are printed with the prefixes `[Mesh]`, `[ESP32 BLE]`, `[LoRaCodec]`, and `[EspFlasher]`. They are disabled in release builds.
 
 ## Contributing
 
