@@ -256,6 +256,11 @@ extension MeshConnections on MeshNetworkController {
     _requestConnection(_userName, endpointId);
   }
 
+  Future<void> disconnectDevice(String endpointId) async {
+    if (!connectedEndpoints.containsKey(endpointId)) return;
+    await _disconnectEndpoint(endpointId);
+  }
+
   void blockDevice(String endpointId) {
     final String? userId = _endpointUserIds[endpointId];
     if (userId == null || userId.isEmpty) return;

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:get/get.dart';
 import 'package:hop_talk/core/utils/constants/colors.dart';
+import 'package:hop_talk/core/utils/helpers/app_helpers.dart';
 import 'package:hop_talk/features/chat/controller/chat_controller.dart';
 import 'package:hop_talk/features/home/views/widgets/build_profile_image.dart';
 import 'package:hop_talk/features/setup/models/user_profile.dart';
@@ -52,9 +53,10 @@ class _ChatScreenState extends State<ChatScreen> {
     if (sent) {
       _textController.clear();
     } else {
-      Get.snackbar(
-        "Not sent",
-        "No connection, the other user's key has not arrived yet, or the message is too long.",
+      AppHelpers.showErrorSnackbar(
+        title: "Not sent",
+        message:
+            "No connection, the other user's key has not arrived yet, or the message is too long.",
       );
     }
   }

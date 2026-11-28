@@ -179,6 +179,8 @@ class NearbyDevicesScreen extends StatelessWidget {
                       controller.meshController.manualConnectToDevice(
                         endpointId,
                       );
+                    } else if (value == 'disconnect') {
+                      controller.meshController.disconnectDevice(endpointId);
                     }
                   },
                   color: AppColors.background,
@@ -187,6 +189,11 @@ class NearbyDevicesScreen extends StatelessWidget {
                       const PopupMenuItem(
                         value: 'connect',
                         child: Text('Connect'),
+                      ),
+                    if (isConnected)
+                      const PopupMenuItem(
+                        value: 'disconnect',
+                        child: Text('Disconnect'),
                       ),
                     if (!isBlocked)
                       const PopupMenuItem(value: 'block', child: Text('Block')),
